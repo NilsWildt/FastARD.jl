@@ -1,0 +1,39 @@
+# Changes here will be overwritten by Copier
+AddAllcontributors: true
+AddCitationCFF: false
+AddCodeOfConduct: false
+AddCompatHelperCI: true
+AddContributionDocs: false
+AddCopierCI: false
+AddDependabot: true
+AddDocs: true
+AddDocsCI: false
+AddFormatterAndLinterConfigFiles: true
+AddGitHubPRTemplate: false
+AddGitHubTemplates: false
+AddLintCI: false
+AddLychee: false
+AddMacToCI: false
+AddPrecommit: true
+AddTagBotCI: true
+AddTestCI: false
+AddWinToCI: false
+Authors: Nils Wildt <nils.wildt@iws.uni-stuttgart.de>
+AutoIncludeTests: false
+CheckExplicitImports: true
+ConfigIndentation: 2
+ExplicitImportsChecklist: exclude_all_qualified_accesses_are_public
+JuliaIndentation: 4
+JuliaMinVersion: '1.11'
+License: MIT
+LicenseCopyrightHolders: Nils Wildt
+MarkdownIndentation: 2
+PackageName: FastARD
+PackageOwner: NilsWildt
+PackageUUID: 6d2a161c-3ce1-50b2-bbf0-8e0ec10ad4d2
+RunJuliaNightlyOnCI: false
+StrategyConfirmIncluded: true
+StrategyLevel: 1
+StrategyReviewExcluded: false
+UseCirrusCI: false
+_src_path: /Users/nilswildt/.julia/packages/BestieTemplate/jdG8v

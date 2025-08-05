@@ -1,0 +1,7 @@
+name = "FastARD"
+uuid = "6d2a161c-3ce1-50b2-bbf0-8e0ec10ad4d2"
+authors = ["Nils Wildt <nils.wildt@iws.uni-stuttgart.de>"]
+version = "0.1.0"
+
+[compat]
+julia = "1.11"
