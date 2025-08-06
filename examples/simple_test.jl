@@ -1,14 +1,18 @@
 using FastARD
 using Random, Statistics, LinearAlgebra
 using Revise
-Random.seed!(123)
+using MultiFloats
+
+
+function run(noise_std=0.1)
+Random.seed!(1)
 
 # Create a sparse regression problem
 n_samples, n_features = 200, 100
 X_raw = randn(n_samples, n_features)
 
-# Standardize features (important for numerical stability)
-X = (X_raw .- mean(X_raw, dims=1)) ./ std(X_raw, dims=1)
+# No need to manually standardize - FastARD now does this automatically by default (standardize=true)
+X = X_raw
 local true_coef
 # True sparse coefficient vector
 true_coef = zeros(n_features)
@@ -16,7 +20,7 @@ active_features = [5, 12, 23, 45, 67, 89]  # 6 out of 100 features are active
 true_coef[active_features] = [2.5, -1.8, 3.2, -0.9, 1.6, -2.1]
 
 # Generate observations
-noise_std = 0.2
+# noise_std = 10.0
 y = X * true_coef + noise_std * randn(n_samples)
 
 println("True number of active features: ", length(active_features))
@@ -47,7 +51,7 @@ println("Effective degrees of freedom: $(sum(model.active))")
 println("Final noise precision (β): $(model.beta)")
 
 # Check if the model is overfitting
-training_rmse = sqrt(mean((predict(model, X) .- y).^2))
+training_rmse = sqrt(mean((FastARD.predict(model, X) .- y).^2))
 println("Training RMSE: $training_rmse")
 
 
@@ -89,7 +93,7 @@ println("Active features: ", active_indices)
 println("True active features: [1, 2, 3]")
 
 # Prediction accuracy
-y_pred = predict(model, X)
+y_pred = FastARD.predict(model, X)
 println("RMSE: ", sqrt(mean((y_pred .- y).^2)))
 
 
@@ -169,14 +173,13 @@ for i in 1:n_outputs
 end
 
 
-using MultiFloats
 
 # High precision computation
-model_hp = FastARDRegressor(MultiFloat{Float64,2}, verbose=false)
+model_hp = FastARDRegressor(MultiFloat{Float64,2}, verbose=true)
 fit!(model_hp, MultiFloat{Float64,2}.(X), MultiFloat{Float64,2}.(y[:, 1]))
 
 # Single precision for speed
-model_sp = FastARDRegressor(Float32, verbose=false)  
+model_sp = FastARDRegressor(Float32, verbose=true)  
 fit!(model_sp, Float32.(X), Float32.(y[:, 1]))
 
 # Compare results
@@ -185,3 +188,6 @@ active_sp, coef_sp = get_active_coefficients(model_sp)
 
 println("High precision active features: ", active_hp)
 println("Single precision active features: ", active_sp)
+end
+
+run()

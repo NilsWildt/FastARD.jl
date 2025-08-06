@@ -5,9 +5,17 @@ using LinearAlgebra: I
 using Statistics
 using ConcreteStructs
 using DispatchDoctor
+using MuladdMacro
 using MultiFloats
 using GenericLinearAlgebra: eigvals
 using TypeUtils
+if Sys.isapple() && Sys.ARCH in (:aarch64, :arm64)
+    @info "Using `AppleAccelerate.jl` for Apple Silicon."
+    using AppleAccelerate
+elseif Sys.ARCH == :x86_64 && occursin(r"intel"i, CPU_MODEL)
+    @info "Detected Intel x86_64 CPU. Loading `MKL.jl`."
+    using MKL
+end
 
 export FastARDRegressor, fit!, predict, get_active_coefficients, predict_with_uncertainty
 
@@ -15,7 +23,7 @@ export FastARDRegressor, fit!, predict, get_active_coefficients, predict_with_un
 # Utility Functions
 # ============================================================================
 
-@stable function safe_sqrt(x::T) where {T <: Real}
+@stable @muladd function safe_sqrt(x::T) where {T <: Real}
     x >= zero(T) ? sqrt(x) : sqrt(eps(T))
 end
 
@@ -41,11 +49,17 @@ Solves Ψ * c = y where Ψ is a basis matrix, c are coefficients, and y are obse
     active::BitVector
     sigma::Matrix{T}
 
+    # Data centering and scaling (for proper prediction)
+    X_mean::Matrix{T}
+    X_std::Matrix{T}
+    y_mean::T
+
     # Training options
     n_iter::Int
     tol::T
     verbose::Bool
     compute_score::Bool
+    standardize::Bool
 
     # Training history
     scores::Vector{T}
@@ -54,6 +68,8 @@ Solves Ψ * c = y where Ψ is a basis matrix, c are coefficients, and y are obse
     # Regularization parameters
     lambda_reg::T
     max_alpha::T
+    min_beta::T
+    max_beta::T
 end
 
 """
@@ -69,24 +85,32 @@ Create a new FastARD regressor for sparse Bayesian regression.
 - `tol::Real=1e-6`: Convergence tolerance
 - `verbose::Bool=true`: Whether to print progress information
 - `compute_score::Bool=false`: Whether to compute and store log marginal likelihood scores
+- `standardize::Bool=true`: Whether to standardize features (center and scale). Recommended for numerical stability unless data is already preprocessed
 - `lambda_reg::Real=1e-8`: Regularization parameter for numerical stability
-- `min_beta::Real=1e-6`: Minimum value for noise precision β
 - `max_alpha::Real=1e12`: Maximum value for precision parameters α
+- `min_beta::Real=1e-6`: Minimum value for noise precision β
+- `max_beta::Real=1e6`: Maximum value for noise precision β
 
 # Returns
 - `FastARDRegressor{T}`: Initialized model ready for fitting
 
 # Examples
 ```julia
-# Create a basic model
+# Create a basic model (standardization enabled by default)
 model = FastARDRegressor()
 
 # Create with custom parameters
 model = FastARDRegressor(Float32; n_iter=100, verbose=false)
 
+# Use raw data without centering/scaling (only if data is already preprocessed)
+model = FastARDRegressor(standardize=false)
+
 # Create with high precision
 using MultiFloats
 model = FastARDRegressor(MultiFloat{Float64,4})
+
+# Create with custom beta bounds
+model = FastARDRegressor(min_beta=1e-8, max_beta=1e8)
 ```
 """
 function FastARDRegressor(
@@ -95,14 +119,18 @@ function FastARDRegressor(
         tol::Real = 1.0e-3,
         verbose::Bool = false,
         compute_score::Bool = false,
+        standardize::Bool = true,
         lambda_reg::Real = 1.0e-8,
-        max_alpha::Real = 1.0e12
+        max_alpha::Real = 1.0e12,
+        min_beta::Real = 1.0e-6,
+        max_beta::Real = 1.0e6
     )
 
     return FastARDRegressor{T}(
         Vector{T}(), Vector{T}(), one(T), BitVector(),
-        Matrix{T}(undef, 0, 0), n_iter, T(tol), verbose,
-        compute_score, Vector{T}(), false, T(lambda_reg), T(max_alpha)
+        Matrix{T}(undef, 0, 0), Matrix{T}(undef, 1, 0), Matrix{T}(undef, 1, 0), zero(T),
+        n_iter, T(tol), verbose, compute_score, standardize, Vector{T}(), false, 
+        T(lambda_reg), T(max_alpha), T(min_beta), T(max_beta)
     )
 end
 
@@ -110,7 +138,7 @@ end
 # Type-stable helper functions
 # ============================================================================
 
-@stable function compute_posterior_cholesky(
+@stable @muladd function compute_posterior_cholesky(
         Σ_inv::AbstractMatrix{T},
         XYa::AbstractVector{T},
         beta::T
@@ -127,7 +155,7 @@ end
 end
 
 
-@stable function compute_posterior_fallback(
+@stable @muladd function compute_posterior_fallback(
         Σ_inv::AbstractMatrix{T},
         XYa::AbstractVector{T},
         beta::T
@@ -164,7 +192,7 @@ end
     end
 end
 
-@stable function update_sparsity_quality!(
+@stable @muladd function update_sparsity_quality!(
         S::Vector{T}, Q::Vector{T},
         XX::AbstractMatrix{T},
         XXd::AbstractVector{T},
@@ -190,7 +218,7 @@ end
         # Update S efficiently
         @inbounds for i in 1:n_features
             row_i = view(XXcross, i, :)
-            adjustment = beta^2 * dot(row_i, Σ_diag .* row_i)
+            adjustment = beta * beta * dot(row_i, Σ_diag .* row_i)
             S[i] -= adjustment
         end
     end
@@ -199,24 +227,24 @@ end
     clamp!(S, eps(T), typemax(T))
 end
 
-@stable function compute_delta_likelihood(
+@stable @muladd function compute_delta_likelihood(
         Q::T, S::T, theta::T,
         alpha::T, is_active::Bool,
         max_alpha::T
     ) where {T <: Real}
     if !is_active && theta > zero(T)
         # Add feature
-        if S > eps(T) && Q^2 > eps(T)
-            return (Q^2 - S) / S + log(S / Q^2)
+        if S > eps(T) && Q * Q > eps(T)
+            return (Q * Q - S) / S + log(S / (Q * Q))
         end
     elseif is_active && theta > zero(T)
         # Recompute feature
         if theta > eps(T)
-            alpha_new = S^2 / theta
+            alpha_new = S * S / theta
             if eps(T) < alpha_new < max_alpha
                 delta_alpha_inv = inv(alpha_new) - inv(alpha)
                 if abs(delta_alpha_inv) > eps(T)
-                    return Q^2 / (S + inv(delta_alpha_inv)) - log(one(T) + S * delta_alpha_inv)
+                    return Q * Q / (S + inv(delta_alpha_inv)) - log(one(T) + S * delta_alpha_inv)
                 end
             end
         end
@@ -225,7 +253,7 @@ end
         if alpha < max_alpha && S < alpha
             ratio = S / alpha
             if ratio < one(T) - eps(T)  # Ensure log argument is positive
-                return Q^2 / (S - alpha) - log(one(T) - ratio)
+                return Q * Q / (S - alpha) - log(one(T) - ratio)
             end
         end
     end
@@ -238,7 +266,7 @@ end
 # Main Fitting Function (not type-stable due to dynamic nature)
 # ============================================================================
 
-function fit!(
+@muladd function fit!(
         model::FastARDRegressor{T},
         X::AbstractMatrix{T},
         y::AbstractVecOrMat{T}
@@ -262,19 +290,33 @@ function fit!(
 
     n_samples, n_features = size(X)
 
-    # Center data
-    X_mean = mean(X, dims = 1)
-    y_mean = mean(y)
-    X_centered = X .- X_mean
-    y_centered = y .- y_mean
+    # Optionally standardize features (center and scale)
+    if model.standardize
+        model.X_mean = mean(X, dims = 1)
+        model.y_mean = mean(y)
+        X_processed = X .- model.X_mean
+        y_processed = y .- model.y_mean
+        
+        model.X_std = std(X_processed, dims = 1)
+        # Handle zero variance features by setting std to 1 (they remain constant)
+        model.X_std = map(s -> s < eps(T) ? one(T) : s, model.X_std)
+        X_processed = X_processed ./ model.X_std
+    else
+        # Use raw data as-is
+        model.X_mean = zeros(T, 1, n_features)
+        model.X_std = ones(T, 1, n_features)
+        model.y_mean = zero(T)
+        X_processed = X
+        y_processed = y
+    end
 
     # Precompute matrices
-    XX = X_centered' * X_centered
-    XY = X_centered' * y_centered
+    XX = X_processed' * X_processed
+    XY = X_processed' * y_processed
     XXd = diag(XX)
 
     # Initialize model
-    var_y = var(y_centered)
+    var_y = var(y_processed)
     model.beta = var_y > eps(T) ? inv(var_y) : T(10)
     model.alpha = fill(model.max_alpha, n_features)
     model.active = falses(n_features)
@@ -283,7 +325,7 @@ function fit!(
     model.converged = false
 
     # Initialize first feature
-    proj = @. XY^2 / (XXd + eps(T))
+    proj = @. XY * XY / (XXd + eps(T))
     start_idx = argmax(proj)
     model.active[start_idx] = true
     model.alpha[start_idx] = XXd[start_idx] / max(proj[start_idx] - var_y, eps(T))
@@ -303,7 +345,7 @@ function fit!(
         # Extract active submatrices using views
         XXa = view(XX, active_idx, active_idx)
         XYa = view(XY, active_idx)
-        X_active = view(X_centered, :, active_idx)
+        X_active = view(X_processed, :, active_idx)
         alpha_a = view(model.alpha, active_idx)
 
         # Compute posterior
@@ -340,15 +382,15 @@ function fit!(
         end
 
         # Update noise precision
-        residual = y_centered - X_active * μ_a
+        residual = y_processed - X_active * μ_a
         rss = dot(residual, residual)
         n_active = sum(model.active)
         model.beta = (n_samples - n_active + dot(alpha_a, Σ_diag)) / (rss + eps(T))
-        model.beta = clamp(model.beta, T(1.0e-6), T(1.0e6))
+        model.beta = clamp(model.beta, model.min_beta, model.max_beta)
 
         if model.compute_score
             score = compute_log_marginal_likelihood(
-                X_active, y_centered,
+                X_active, y_processed,
                 collect(alpha_a), model.beta,
                 μ_a, Σ_diag
             )
@@ -356,7 +398,7 @@ function fit!(
         end
 
         # Compute feature updates
-        theta = @. q^2 - s
+        theta = @. q * q - s
 
         # Compute change in marginal likelihood
         fill!(deltaL, zero(T))
@@ -384,7 +426,7 @@ function fit!(
         # Apply update
         if theta[feature_idx] > zero(T)
             model.alpha[feature_idx] = clamp(
-                s[feature_idx]^2 / theta[feature_idx],
+                s[feature_idx] * s[feature_idx] / theta[feature_idx],
                 eps(T), model.max_alpha
             )
             model.active[feature_idx] = true
@@ -422,16 +464,24 @@ end
 # Prediction Functions (not type-stable due to dynamic arrays)
 # ============================================================================
 
-function predict(model::FastARDRegressor{T}, X::AbstractMatrix{T}) where {T <: Real}
+@muladd function predict(model::FastARDRegressor{T}, X::AbstractMatrix{T}) where {T <: Real}
     active_idx = findall(model.active)
-    isempty(active_idx) && return zeros(T, size(X, 1))
+    isempty(active_idx) && return fill(model.y_mean, size(X, 1))
 
-    X_active = view(X, :, active_idx)
+    # Apply same preprocessing as during training
+    X_processed = if model.standardize
+        (X .- model.X_mean) ./ model.X_std
+    else
+        X  # Use raw data as-is
+    end
+    X_active = view(X_processed, :, active_idx)
     coef_active = view(model.coef, active_idx)
-    return X_active * coef_active
+    
+    # Add back the y_mean to get predictions on original scale
+    return X_active * coef_active .+ model.y_mean
 end
 
-function predict_with_uncertainty(
+@muladd function predict_with_uncertainty(
         model::FastARDRegressor{T},
         X::AbstractMatrix{T}
     ) where {T <: Real}
@@ -439,16 +489,25 @@ function predict_with_uncertainty(
     n_test = size(X, 1)
 
     if isempty(active_idx)
-        y_pred = zeros(T, n_test)
+        y_pred = fill(model.y_mean, n_test)
         y_std = fill(safe_sqrt(inv(model.beta)), n_test)
         return y_pred, y_std
     end
 
-    X_active = view(X, :, active_idx)
+    # Apply same preprocessing as during training
+    X_processed = if model.standardize
+        (X .- model.X_mean) ./ model.X_std
+    else
+        X  # Use raw data as-is
+    end
+    X_active = view(X_processed, :, active_idx)
     coef_active = view(model.coef, active_idx)
-    y_pred = X_active * coef_active
+    
+    # Predictions on processed scale, then add back y_mean
+    y_pred_processed = X_active * coef_active
+    y_pred = y_pred_processed .+ model.y_mean
 
-    # Predictive variance
+    # Predictive variance (uncertainty doesn't change with centering/scaling)
     var_noise = inv(model.beta)
     var_param = zeros(T, n_test)
 
@@ -476,7 +535,7 @@ end
 # Log Marginal Likelihood
 # ============================================================================
 
-function compute_log_marginal_likelihood(
+@muladd function compute_log_marginal_likelihood(
         X_active::AbstractMatrix{T},
         y::AbstractVector{T},
         alpha_active::AbstractVector{T},
