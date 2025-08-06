@@ -150,9 +150,8 @@ Test.@testset let
     Test.@test model4.compute_score == true
     
     # Test with custom regularization
-    model5 = FastARD.FastARDRegressor(lambda_reg=1e-5, min_beta=1e-4, max_alpha=1e10)
+    model5 = FastARD.FastARDRegressor(lambda_reg=1e-5, max_alpha=1e10)
     Test.@test model5.lambda_reg == 1e-5
-    Test.@test model5.min_beta == 1e-4
     Test.@test model5.max_alpha == 1e10
 end
 

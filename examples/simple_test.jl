@@ -77,9 +77,9 @@ true_coef[1:3] = [5.0, -3.0, 4.0]  # Only 3 active features
 y = X * true_coef + 0.1 * randn(n_samples)
 
 # Fit the model for high-dimensional case (need stronger regularization)
-model = FastARDRegressor(n_iter=300, verbose=false,
+model = FastARDRegressor(n_iter=300, verbose=true,
                         lambda_reg=1e-5,   # Stronger regularization for n<p case
-                        max_alpha=1e7)     # Moderate max precision
+                        max_alpha=1e3)     # Moderate max precision
 fit!(model, X, y)
 
 # Check results
@@ -172,8 +172,8 @@ end
 using MultiFloats
 
 # High precision computation
-model_hp = FastARDRegressor(MultiFloat{Float64,4}, verbose=false)
-fit!(model_hp, MultiFloat{Float64,4}.(X), MultiFloat{Float64,4}.(y[:, 1]))
+model_hp = FastARDRegressor(MultiFloat{Float64,2}, verbose=false)
+fit!(model_hp, MultiFloat{Float64,2}.(X), MultiFloat{Float64,2}.(y[:, 1]))
 
 # Single precision for speed
 model_sp = FastARDRegressor(Float32, verbose=false)  
@@ -185,20 +185,3 @@ active_sp, coef_sp = get_active_coefficients(model_sp)
 
 println("High precision active features: ", active_hp)
 println("Single precision active features: ", active_sp)
-
-# ============================================================================
-# RESULTS INTERPRETATION
-# ============================================================================
-println("\n" * "="^80)
-println("🔧 MAJOR ALGORITHM IMPROVEMENTS:")
-println("1. ✅ Fixed uncertainty calculation bug")
-println("2. ✅ Added robust posterior covariance computation with condition number checks")
-println("3. ✅ Implemented adaptive feature limits (max = n_samples/3)")  
-println("4. ✅ Added minimum improvement threshold for feature selection")
-println("5. ✅ Enhanced regularization for over-parameterized models")
-println("\n📊 EXPECTED RESULTS:")
-println("• Feature selection: Should be much more conservative")
-println("• Uncertainty estimates: Should be realistic and well-calibrated")
-println("• Numerical stability: Better handling of ill-conditioned cases")
-println("• Feature limits: Standard case ≤67 features, High-dim ≤17 features")
-println("="^80)
