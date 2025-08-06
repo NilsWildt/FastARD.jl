@@ -1,90 +1,31 @@
 module FastARD
-using MultiFloats
+
 using LinearAlgebra
-using LinearAlgebra: I
 using Statistics
 using ConcreteStructs
 using DispatchDoctor
-using TypeUtils
-using TestItems
-using Test
-using GenericLinearAlgebra: eigvals
 
-	
 export FastARDRegressor, fit!, predict, get_active_coefficients, predict_with_uncertainty
 
-@inline Base.precision(::Type{MultiFloat{T,N}}) where {T,N} =
-    N * precision(T) + (N - 1) # implicit bits of precision between limbs
-	
 # ============================================================================
 # Utility Functions
 # ============================================================================
 
-@stable function round_close_to_zero(x::T, eps_val::T = eps(T)) where {T <: Real}
-    return abs(x) > eps_val ? x : zero(T)
-end
-
-@stable function round_close_to_zero(x::T, eps_val::V = eps(V)) where {T <: Real, V <: Real}
-    return abs(x) > eps_val ? x : zero(T)
-end
-
 @stable function safe_sqrt(x::T) where T<:Real
-    if x >= zero(T)
-        return sqrt(x)
-    else
-        ε = eps(T)
-        if -x < ε^(3//4)
-            @warn "Taking sqrt of small negative number $x, returning ε"
-            return ε
-        else
-            throw(DomainError(x, "Cannot take sqrt of significantly negative number"))
-        end
-    end
-end
-
-
-"""
-    only_finite(x, y)
-
-Filter paired vectors to keep only elements where y is finite.
-"""
-function only_finite(x::AbstractVector{T}, y::AbstractVector{T}) where {T <: Real}
-    length(x) == length(y) || throw(ArgumentError("Vectors must have equal length"))
-    finite_mask = isfinite.(y)
-    return x[finite_mask], y[finite_mask]
+    x >= zero(T) ? sqrt(x) : sqrt(eps(T))
 end
 
 # ============================================================================
 # Core Data Structures
 # ============================================================================
 
-
-"""
-    PrecomputedCache{T,M,V}
-
-Holds precomputed matrices for efficient computation.
-Supports both regular arrays and static arrays.
-"""
-@concrete struct PrecomputedCache{T<:Real,U<:AbstractArray, M<:AbstractArray{T}, V<:AbstractVector{T}}
-    ΨtΨ::M
-    Ψty::U
-    diag_ΨtΨ::V
-end
-
-"""
-    FastARDRegressor{T<:Real}
-
-Fast Automatic Relevance Determination for sparse Bayesian regression.
-Solves Ψ * c = y where Ψ is a basis matrix, c are coefficients, and y are observations.
-"""
 @concrete mutable struct FastARDRegressor{T<:Real}
     # Model parameters
-    coef::AbstractArray{T}
-    alpha::AbstractArray{T}
+    coef::Vector{T}
+    alpha::Vector{T}
     beta::T
-    beta_prev::T
     active::BitVector
-    sigma::AbstractArray{T}
+    sigma::Matrix{T}
     
     # Training options
     n_iter::Int
@@ -98,711 +39,309 @@ Solves Ψ * c = y where Ψ is a basis matrix, c are coefficients, and y are obse
     
     # Regularization parameters
     lambda_reg::T
-    min_beta::T
     max_alpha::T
 end
 
-"""
-    FastARDRegressor(T::Type{<:Real}=Float64; kwargs...)
-
-Create a new FastARD regressor for sparse Bayesian regression.
-
-# Arguments
-- `T::Type{<:Real}=Float64`: Numeric type for computations (Float64, Float32, etc.)
-
-# Keyword Arguments
-- `n_iter::Int=200`: Maximum number of iterations
-- `tol::Real=1e-6`: Convergence tolerance
-- `verbose::Bool=true`: Whether to print progress information
-- `compute_score::Bool=false`: Whether to compute and store log marginal likelihood scores
-- `lambda_reg::Real=1e-8`: Regularization parameter for numerical stability
-- `min_beta::Real=1e-6`: Minimum value for noise precision β
-- `max_alpha::Real=1e12`: Maximum value for precision parameters α
-
-# Returns
-- `FastARDRegressor{T}`: Initialized model ready for fitting
-
-# Examples
-```julia
-# Create a basic model
-model = FastARDRegressor()
-
-# Create with custom parameters
-model = FastARDRegressor(Float32; n_iter=100, verbose=false)
-
-# Create with high precision
-using MultiFloats
-model = FastARDRegressor(MultiFloat{Float64,4})
-```
-"""
 function FastARDRegressor(T::Type{<:Real}=Float64; 
-                         n_iter::Int=200, 
-                         tol::Real=1e-6, 
-                         verbose::Bool=true, 
+                         n_iter::Int=300, 
+                         tol::Real=1e-3, 
+                         verbose::Bool=false, 
                          compute_score::Bool=false,
-                         lambda_reg::Real=1e-6,
-                         min_beta::Real=1e-6,
-                         max_alpha::Real=1e8)
+                         lambda_reg::Real=1e-8,
+                         max_alpha::Real=1e12)
     
     return FastARDRegressor{T}(
-        Vector{T}(), Vector{T}(), one(T), one(T), BitVector(),
+        Vector{T}(), Vector{T}(), one(T), BitVector(),
         Matrix{T}(undef, 0, 0), n_iter, T(tol), verbose,
-        compute_score, Vector{T}(), false, T(lambda_reg), T(min_beta), T(max_alpha)
+        compute_score, Vector{T}(), false, T(lambda_reg), T(max_alpha)
     )
 end
 
 # ============================================================================
-# Matrix Precomputation
+# Type-stable helper functions
 # ============================================================================
 
-@stable function precompute_matrices(Ψ::AbstractMatrix{T}, y::AbstractVector{T}) where T<:Real
-    ΨtΨ = Ψ' * Ψ
-    Ψty = Ψ' * y
-    diag_ΨtΨ = diag(ΨtΨ)
-    return PrecomputedCache(ΨtΨ, Ψty, diag_ΨtΨ)
+@stable function compute_posterior_cholesky(Σ_inv::AbstractMatrix{T}, 
+                                           XYa::AbstractVector{T},
+                                           beta::T) where T<:Real
+    L = cholesky(Σ_inv).L
+    z = L \ (beta * XYa)
+    μ_a = L' \ z
+    
+    # Compute diagonal of covariance efficiently
+    L_inv = inv(L)
+    Σ_diag = vec(sum(abs2, L_inv, dims=2))
+    
+    return μ_a, Σ_diag, true
 end
 
-# ============================================================================
-# Initialization Logic
-# ============================================================================
-
-@stable function initialize_model_parameters!(model::FastARDRegressor{T}, n_features::Int, var_y::T) where T<:Real
-    model.alpha = fill(one(T), n_features)
-    model.active = falses(n_features)
-    model.coef = zeros(T, n_features)
-    empty!(model.scores)
-    model.converged = false
-    
-    # Initialize beta robustly
-    model.beta = var_y > eps(T) ? inv(var_y) : T(100)
-    model.beta = max(model.beta, model.min_beta)
-    model.beta_prev = model.beta
+@stable function compute_posterior_fallback(Σ_inv::AbstractMatrix{T}, 
+                                           XYa::AbstractVector{T},
+                                           beta::T) where T<:Real
+    Σ = pinv(Σ_inv)
+    μ_a = beta * Σ * XYa
+    Σ_diag = diag(Σ)
+    return μ_a, Σ_diag, false
 end
 
-function initialize_first_active_feature!(model::FastARDRegressor{T}, 
-                                                  cache::PrecomputedCache{T}, 
-                                                  var_y::T) where T<:Real
-    # Conservative initialization with higher threshold
-    proj = cache.Ψty.^2 ./ (cache.diag_ΨtΨ .+ eps(T))
-    threshold = var_y * T(3)
+@stable function update_sparsity_quality!(S::Vector{T}, Q::Vector{T},
+                                         XX::AbstractMatrix{T},
+                                         XXd::AbstractVector{T},
+                                         XY::AbstractVector{T},
+                                         active_idx::Vector{Int},
+                                         μ_a::Vector{T},
+                                         Σ_diag::Vector{T},
+                                         beta::T) where T<:Real
+    n_features = length(S)
     
-    valid_features = findall(>(threshold), proj)
-    
-    if isempty(valid_features)
-        start_idx = argmax(proj)
-        proj[start_idx] < var_y * T(0.1) && return  # Skip if too weak
-    else
-        start_idx = valid_features[argmax(view(proj, valid_features))]
-    end
-    
-    model.active[start_idx] = true
-    
-    # Conservative alpha initialization
-    if proj[start_idx] > var_y + eps(T)
-        model.alpha[start_idx] = cache.diag_ΨtΨ[start_idx] / 
-                                 max(proj[start_idx] - var_y, var_y * T(2))
-    else
-        model.alpha[start_idx] = T(10)
-    end
-    
-    model.alpha[start_idx] = clamp(model.alpha[start_idx], one(T), T(1000))
-end
-
-# ============================================================================
-# Posterior Computation
-# ============================================================================
-
-struct PosteriorResult{T<:Real}
-    μ::Vector{T}
-    Σ_diag::Vector{T}
-    success::Bool
-end
-
-@stable function compute_posterior(ΨtΨ_active::AbstractMatrix{T},
-                                   Ψty_active::AbstractVector{T},
-                                   alpha_active::AbstractVector{T},
-                                   beta::T,
-                                   lambda_reg::T) where T<:Real
-    
-    Σ_inv = beta * ΨtΨ_active + Diagonal(alpha_active .+ lambda_reg)
-    
-    try
-        # Primary path: Cholesky decomposition
-        L = cholesky(Σ_inv).L
-        z = L \ (beta * Ψty_active)
-        μ = L' \ z
-        
-        L_inv = inv(L)
-        Σ_diag = vec(sum(abs2, L_inv, dims=2))
-        
-        return PosteriorResult(μ, max.(Σ_diag, eps(T)), true)
-        
-    catch e
-        @warn "Cholesky failed, using fallback: $e"
-        
-        try
-            # Fallback: pseudo-inverse
-            Σ = pinv(Σ_inv)
-            μ = beta * Σ * Ψty_active
-            Σ_diag = diag(Σ)
-            
-            return PosteriorResult(μ, max.(Σ_diag, eps(T)), false)
-            
-        catch
-            # Last resort: heavy regularization
-            @warn "Pseudo-inverse failed, using heavy regularization"
-            n_active = length(alpha_active)
-            I_reg = Diagonal(fill(lambda_reg * T(1000), n_active))
-            Σ = inv(Σ_inv + I_reg)
-            μ = beta * Σ * Ψty_active
-            Σ_diag = diag(Σ)
-            
-            return PosteriorResult(μ, max.(Σ_diag, eps(T)), false)
-        end
-    end
-end
-
-# ============================================================================
-# Sparsity and Quality Parameter Computation
-# ============================================================================
-@concrete struct SparsityQualityResult
-    s
-    q
-    S
-    Q
-end
-
-@stable function compute_sparsity_quality_params(cache::PrecomputedCache,
-                                                 alpha::AbstractVector{T},
-                                                 active::AbstractVector{Bool},
-                                                 μ_active::AbstractVector{T},
-                                                 Σ_diag::AbstractVector{T},
-                                                 beta::T) where T<:Real
-    n_features = length(alpha)
-    active_idx = findall(active)
-    
-    # Initialize S and Q - convert to regular arrays for in-place operations
-    S = beta * Vector(cache.diag_ΨtΨ)
-    Q = beta * Vector(cache.Ψty)
+    # Initialize with basic values
+    S .= beta .* XXd
+    Q .= beta .* XY
     
     if !isempty(active_idx)
-        # Woodbury identity updates
-        ΨtΨ_cross = view(cache.ΨtΨ, :, active_idx)
+        # Woodbury identity updates using views
+        XXcross = view(XX, :, active_idx)
         
-        # Update Q
-        mul!(Q, ΨtΨ_cross, μ_active, -beta, one(T))
+        # Update Q efficiently
+        mul!(Q, XXcross, μ_a, -beta, one(T))
         
         # Update S efficiently
         @inbounds for i in 1:n_features
-            row_i = view(ΨtΨ_cross, i, :)
+            row_i = view(XXcross, i, :)
             adjustment = beta^2 * dot(row_i, Σ_diag .* row_i)
             S[i] -= adjustment
         end
     end
     
     # Ensure numerical stability
-    min_val = eps(T) * max(maximum(abs, S; init=one(T)), maximum(abs, Q; init=one(T)))
-    clamp!(S, min_val, typemax(T))
-    
-    # Compute s and q with stability
-    s = similar(S)
-    q = similar(Q)
-    
-    @inbounds for i in 1:n_features
-        if active[i] && isfinite(alpha[i]) && alpha[i] > zero(T)
-            denominator = alpha[i] - S[i]
-            threshold = min_val * max(abs(alpha[i]), abs(S[i]), one(T))
-            
-            if abs(denominator) > threshold
-                s[i] = alpha[i] * S[i] / denominator
-                q[i] = alpha[i] * Q[i] / denominator
-            else
-                s[i] = S[i]
-                q[i] = Q[i]
-            end
-        else
-            s[i] = S[i]
-            q[i] = Q[i]
+    clamp!(S, eps(T), typemax(T))
+end
+
+@stable function compute_delta_likelihood(Q::T, S::T, theta::T, 
+                                         alpha::T, is_active::Bool,
+                                         max_alpha::T) where T<:Real
+    if !is_active && theta > zero(T)
+        # Add feature
+        if S > eps(T) && Q^2 > eps(T)
+            return (Q^2 - S) / S + log(S / Q^2)
         end
-    end
-    
-    return SparsityQualityResult(s, q, S, Q)
-end
-
-# ============================================================================
-# Noise Precision Update
-# ============================================================================
-
-@stable function update_noise_precision!(model::FastARDRegressor{T},
-                                         Ψ_active::AbstractMatrix{T},
-                                         y::AbstractVector{T},
-                                         μ_active::Vector{T},
-                                         alpha_active::AbstractVector{T},
-                                         Σ_diag::Vector{T},
-                                         n_samples::Int) where T<:Real
-    
-    residual = y - Ψ_active * μ_active
-    rss = dot(residual, residual)
-    
-    n_active = sum(model.active)
-    numerator = T(n_samples - n_active) + dot(alpha_active, Σ_diag)
-    denominator = rss + T(2) * eps(T)
-    
-    model.beta = numerator / denominator
-    model.beta = max(model.beta, model.min_beta)
-end
-
-# ============================================================================
-# Feature Update Logic
-# ============================================================================
-
-@stable function compute_feature_theta(q::AbstractVector{T}, s::AbstractVector{T}) where T<:Real
-    return q.^2 .- s
-end
-
-@stable function classify_features(theta::AbstractVector{T}, active::BitVector) where T<:Real
-    add = (theta .> zero(T)) .& (.!active)
-    recompute = (theta .> zero(T)) .& active
-    delete = .!(add .| recompute)
-    return add, recompute, delete
-end
-
-@stable function compute_delta_marginal_likelihood!(deltaL::Vector{T},
-                                                   theta::Vector{T},
-                                                   s::Vector{T}, q::Vector{T},
-                                                   S::Vector{T}, Q::Vector{T},
-                                                   alpha::Vector{T},
-                                                   active::BitVector,
-                                                   add_mask::BitVector,
-                                                   recompute_mask::BitVector,
-                                                   delete_mask::BitVector,
-                                                   max_alpha::T) where T<:Real
-    fill!(deltaL, zero(T))
-    
-    # Add features
-    @inbounds for i in findall(add_mask)
-        if S[i] > eps(T) && Q[i]^2 > eps(T)
-            ratio = S[i] / Q[i]^2
-            if zero(T) < ratio < one(T)
-                deltaL[i] = (Q[i]^2 - S[i]) / S[i] + log(ratio)
-            end
-        end
-    end
-    
-    # Recompute features
-    @inbounds for i in findall(recompute_mask)
-        if theta[i] > eps(T) && s[i] > zero(T)
-            alpha_new = s[i]^2 / theta[i]
-            if eps(T) < alpha_new < max_alpha && alpha[i] > eps(T) && isfinite(alpha[i])
-                delta_alpha = inv(alpha_new) - inv(alpha[i])
-                log_arg = one(T) + S[i] * delta_alpha
-                denominator = S[i] + inv(delta_alpha)
-                
-                if log_arg > eps(T) && abs(denominator) > eps(T)
-                    deltaL[i] = Q[i]^2 / denominator - log(log_arg)
+    elseif is_active && theta > zero(T)
+        # Recompute feature
+        if theta > eps(T)
+            alpha_new = S^2 / theta
+            if eps(T) < alpha_new < max_alpha
+                delta_alpha_inv = inv(alpha_new) - inv(alpha)
+                if abs(delta_alpha_inv) > eps(T)
+                    return Q^2 / (S + inv(delta_alpha_inv)) - log(one(T) + S * delta_alpha_inv)
                 end
             end
         end
-    end
-    
-    # Delete features
-    @inbounds for i in findall(delete_mask)
-        if (active[i] && isfinite(alpha[i]) && alpha[i] > eps(T) &&
-            isfinite(Q[i]) && isfinite(S[i]))
-            
-            denominator = S[i] - alpha[i]
-            ratio = S[i] / alpha[i]
-            log_arg = one(T) - ratio
-            
-            if (abs(denominator) > eps(T) && ratio < one(T) - eps(T) && log_arg > eps(T))
-                deltaL[i] = Q[i]^2 / denominator - log(log_arg)
-            end
-        end
-    end
-end
-
-function find_best_feature_update(deltaL::AbstractVector{T}) where T<:Real
-    valid_idx = findall(isfinite.(deltaL))
-    isempty(valid_idx) && return nothing
-    
-    # More conservative threshold - require meaningful improvement
-    min_improvement = max(T(1e-6), T(100) * eps(T))
-    significant_idx = findall(deltaL[valid_idx] .> min_improvement)
-    isempty(significant_idx) && return nothing
-    
-    # Among significant improvements, pick the best
-    best_local_idx = argmax(view(deltaL, valid_idx[significant_idx]))
-    return valid_idx[significant_idx[best_local_idx]]
-end
-
-function apply_feature_update!(alpha::Vector{T}, active::BitVector,
-                                      feature_idx::Int, theta::Vector{T}, s::Vector{T},
-                                      max_alpha::T, clf_bias::Bool) where T<:Real
-    if theta[feature_idx] > eps(T)
-        # Add or update feature
-        alpha_new = clamp(s[feature_idx]^2 / theta[feature_idx], eps(T), max_alpha)
-        alpha[feature_idx] = alpha_new
-        active[feature_idx] = true
-    elseif active[feature_idx] && sum(active) > 1
-        # Delete feature (protect bias for classification)
-        if !(feature_idx == 1 && clf_bias)
-            active[feature_idx] = false
-            alpha[feature_idx] = max_alpha
-        end
-    end
-end
-
-function check_precision_convergence(theta::Vector{T}, s::Vector{T},
-                                            alpha::Vector{T}, active::BitVector,
-                                            tol::T, max_alpha::T) where T<:Real
-    @inbounds for i in findall((theta .> eps(T)) .& active)
-        alpha_new = clamp(s[i]^2 / theta[i], eps(T), max_alpha)
-        if abs(alpha_new - alpha[i]) > tol * max(alpha_new, alpha[i])
-            return false
-        end
-    end
-    return true
-end
-
-@stable function update_precision_parameters!(model::FastARDRegressor{T},
-                                             sq_result::SparsityQualityResult,
-                                             n_samples::Int, clf_bias::Bool) where T<:Real
-    
-    theta = compute_feature_theta(sq_result.q, sq_result.s)
-    add_mask, recompute_mask, delete_mask = classify_features(theta, model.active)
-    
-    # Adaptive feature limit based on sample size
-    max_features = min(n_samples ÷ 3, length(model.alpha) ÷ 2)
-    current_features = sum(model.active)
-    
-    # If we're at the feature limit, only allow deletions and recomputations
-    if current_features >= max_features
-        add_mask .= false
-        if model.verbose && any(add_mask)
-            @warn "Feature limit reached ($current_features/$max_features), only deletions allowed"
+    elseif is_active && theta <= zero(T)
+        # Delete feature
+        if alpha < max_alpha
+            return Q^2 / (S - alpha) - log(one(T) - S/alpha)
         end
     end
     
-    deltaL = zeros(T, length(model.alpha))
-    
-    compute_delta_marginal_likelihood!(deltaL, theta, sq_result.s, sq_result.q,
-                                      sq_result.S, sq_result.Q, model.alpha,
-                                      model.active, add_mask, recompute_mask,
-                                      delete_mask, model.max_alpha)
-    
-    deltaL ./= T(n_samples)
-    
-    feature_idx = find_best_feature_update(deltaL)
-    
-    if isnothing(feature_idx)
-        return check_precision_convergence(theta, sq_result.s, model.alpha,
-                                         model.active, model.tol, model.max_alpha)
-    end
-    
-    apply_feature_update!(model.alpha, model.active, feature_idx, theta,
-                         sq_result.s, model.max_alpha, clf_bias)
-    
-    return false  # Not converged
+    return zero(T)
 end
 
 # ============================================================================
-# Convergence Checking
+# Main Fitting Function (not type-stable due to dynamic nature)
 # ============================================================================
 
-@stable function check_beta_convergence(model::FastARDRegressor{T}) where T<:Real
-    β_change = abs(model.beta - model.beta_prev)
-    β_tolerance = model.tol * max(abs(model.beta), abs(model.beta_prev), one(T))
+function fit!(model::FastARDRegressor{T}, X::AbstractMatrix{T}, y::AbstractVector{T}) where T<:Real
+    n_samples, n_features = size(X)
     
-    converged = β_change < β_tolerance
-    model.beta_prev = model.beta
-    return converged
-end
-
-# ============================================================================
-# Main Iteration Logic
-# ============================================================================
-
-@stable function perform_single_iteration!(model::FastARDRegressor{T},
-                                          Ψ::AbstractMatrix{T},
-                                          y::AbstractVector{T},
-                                          cache::PrecomputedCache{T},
-                                          iter::Int, n_samples::Int) where T<:Real
-    
-    active_idx = findall(model.active)
-    isempty(active_idx) && return false
-    
-    # Extract active submatrices (using views for efficiency)
-    Ψ_active = view(Ψ, :, active_idx)
-    ΨtΨ_active = view(cache.ΨtΨ, active_idx, active_idx)
-    Ψty_active = view(cache.Ψty, active_idx)
-    alpha_active = view(model.alpha, active_idx)
-    
-    # Compute posterior
-    posterior = compute_posterior(ΨtΨ_active, Ψty_active, alpha_active, 
-                                 model.beta, model.lambda_reg)
-    
-    # Update coefficients
-    fill!(model.coef, zero(T))
-    model.coef[active_idx] .= posterior.μ
-    
-    # Compute sparsity and quality parameters
-    sq_result = compute_sparsity_quality_params(cache, model.alpha, model.active,
-                                               posterior.μ, posterior.Σ_diag, model.beta)
-    
-    # Update noise precision
-    update_noise_precision!(model, Ψ_active, y, posterior.μ, alpha_active,
-                           posterior.Σ_diag, n_samples)
-    
-    # Update precision parameters
-    converged = update_precision_parameters!(model, sq_result, n_samples, false)
-    
-    # Logging
-    if model.verbose && (iter % 10 == 0 || iter <= 5)
-        println("Iteration $iter: active = $(sum(model.active)), β = $(model.beta)")
-    end
-    
-    # Compute score if requested
-    if model.compute_score
-        score = compute_log_marginal_likelihood(Ψ_active, y, alpha_active,
-                                               model.beta, posterior.μ,
-                                               posterior.Σ_diag, model.lambda_reg)
-        push!(model.scores, score)
-    end
-    
-    return !converged
-end
-
-function finalize_model!(model::FastARDRegressor{T}, cache::PrecomputedCache{T}) where T<:Real
-    active_idx = findall(model.active)
-    if !isempty(active_idx)
-        ΨtΨ_active = cache.ΨtΨ[active_idx, active_idx]
-        alpha_active = model.alpha[active_idx]
-        
-        # More robust regularization for covariance computation
-        n_active = length(active_idx)
-        base_reg = max(model.lambda_reg, T(1e-8))
-        
-        # Add stronger regularization if too many features are selected
-        if n_active > 20  # Too many features - strengthen regularization
-            extra_reg = T(n_active) * base_reg * T(100)
-            model.verbose && @warn "Many features selected ($n_active), using stronger regularization"
-        else
-            extra_reg = base_reg * T(10)
-        end
-        
-        Σ_inv = model.beta * ΨtΨ_active + Diagonal(alpha_active .+ extra_reg)
-        
-        # Check condition number for numerical stability
-        try
-            cond_num = cond(Σ_inv)
-            if cond_num > T(1e12)
-                model.verbose && @warn "Ill-conditioned posterior covariance (cond=$cond_num), adding regularization"
-                Σ_inv += T(cond_num * 1e-14) * I
-            end
-            
-            model.sigma = inv(Σ_inv)
-            
-            # Clamp diagonal entries to prevent extreme values
-            sigma_diag = diag(model.sigma)
-            max_var = T(1000) / model.beta  # Reasonable maximum variance
-            if any(sigma_diag .> max_var)
-                model.verbose && @warn "Large posterior variances detected, clamping values"
-                # Use diagonal approximation for stability
-                model.sigma = Diagonal(min.(sigma_diag, max_var))
-            end
-            
-        catch e
-            model.verbose && @warn "Posterior computation failed ($e), using regularized diagonal approximation"
-            # Fallback to diagonal approximation
-            diag_entries = T(1) ./ (model.beta * diag(ΨtΨ_active) .+ alpha_active .+ extra_reg)
-            model.sigma = Diagonal(diag_entries)
-        end
-    else
-        model.sigma = Matrix{T}(undef, 0, 0)
-    end
-end
-
-# ============================================================================
-# Main Fitting Function
-# ============================================================================
-
-"""
-    fit!(model::FastARDRegressor, Ψ::AbstractMatrix{T}, y::AbstractVecOrMat{T}) where T<:Real
-
-Fit the FastARD model using Sequential Sparse Bayes algorithm.
-Handles both vector and matrix observations (multiple outputs).
-"""
-function fit!(model::FastARDRegressor{T}, 
-              Ψ::AbstractMatrix{T}, 
-              y::AbstractVecOrMat{T}) where T<:Real
-    
-    # Handle matrix y by fitting each column separately
-    if y isa AbstractMatrix
-        n_outputs = size(y, 2)
-        models = Vector{typeof(model)}(undef, n_outputs)
-        
-        for i in 1:n_outputs
-            if model.verbose
-                println("Fitting output $i/$n_outputs")
-            end
-            model_copy = deepcopy(model)
-            models[i] = fit!(model_copy, Ψ, view(y, :, i))
-        end
-        return models
-    end
-    
-    # Main fitting routine for vector y
-    n_samples, n_features = size(Ψ)
-    
-    # Initialize model parameters
-    var_y = var(y)
-    initialize_model_parameters!(model, n_features, var_y)
+    # Center data
+    X_mean = mean(X, dims=1)
+    y_mean = mean(y)
+    X_centered = X .- X_mean
+    y_centered = y .- y_mean
     
     # Precompute matrices
-    cache = precompute_matrices(Ψ, y)
+    XX = X_centered' * X_centered
+    XY = X_centered' * y_centered
+    XXd = diag(XX)
     
-    # Initialize first active feature
-    initialize_first_active_feature!(model, cache, var_y)
+    # Initialize model
+    var_y = var(y_centered)
+    model.beta = var_y > eps(T) ? inv(var_y) : T(10)
+    model.alpha = fill(model.max_alpha, n_features)
+    model.active = falses(n_features)
+    model.coef = zeros(T, n_features)
+    empty!(model.scores)
+    model.converged = false
+    
+    # Initialize first feature
+    proj = @. XY^2 / (XXd + eps(T))
+    start_idx = argmax(proj)
+    model.active[start_idx] = true
+    model.alpha[start_idx] = XXd[start_idx] / max(proj[start_idx] - var_y, eps(T))
+    
+    # Pre-allocate work arrays
+    S = zeros(T, n_features)
+    Q = zeros(T, n_features)
+    s = zeros(T, n_features)
+    q = zeros(T, n_features)
+    deltaL = zeros(T, n_features)
     
     # Main iteration loop
     for iter in 1:model.n_iter
-        continue_iteration = perform_single_iteration!(model, Ψ, y, cache, iter, n_samples)
+        active_idx = findall(model.active)
+        isempty(active_idx) && break
         
-        !continue_iteration && break
+        # Extract active submatrices using views
+        XXa = view(XX, active_idx, active_idx)
+        XYa = view(XY, active_idx)
+        X_active = view(X_centered, :, active_idx)
+        alpha_a = view(model.alpha, active_idx)
         
-        # Check for early convergence
-        if iter > 10 && check_beta_convergence(model)
+        # Compute posterior
+        Σ_inv = model.beta * XXa + Diagonal(alpha_a) + model.lambda_reg * I
+        
+        local μ_a::Vector{T}, Σ_diag::Vector{T}
+        try
+            μ_a, Σ_diag, _ = compute_posterior_cholesky(Σ_inv, XYa, model.beta)
+        catch
+            μ_a, Σ_diag, _ = compute_posterior_fallback(Σ_inv, XYa, model.beta)
+        end
+        
+        # Update coefficients
+        fill!(model.coef, zero(T))
+        @inbounds for (i, idx) in enumerate(active_idx)
+            model.coef[idx] = μ_a[i]
+        end
+        
+        # Update S and Q
+        update_sparsity_quality!(S, Q, XX, XXd, XY, active_idx, μ_a, Σ_diag, model.beta)
+        
+        # Compute s and q
+        s .= S
+        q .= Q
+        
+        @inbounds for i in active_idx
+            if model.alpha[i] < model.max_alpha
+                denom = model.alpha[i] - S[i]
+                if abs(denom) > eps(T) * max(model.alpha[i], S[i])
+                    s[i] = model.alpha[i] * S[i] / denom
+                    q[i] = model.alpha[i] * Q[i] / denom
+                end
+            end
+        end
+        
+        # Update noise precision
+        residual = y_centered - X_active * μ_a
+        rss = dot(residual, residual)
+        n_active = sum(model.active)
+        model.beta = (n_samples - n_active + dot(alpha_a, Σ_diag)) / (rss + eps(T))
+        model.beta = clamp(model.beta, T(1e-6), T(1e6))
+        
+        # Compute feature updates
+        theta = @. q^2 - s
+        
+        # Compute change in marginal likelihood
+        fill!(deltaL, zero(T))
+        @inbounds for i in 1:n_features
+            deltaL[i] = compute_delta_likelihood(Q[i], S[i], theta[i], 
+                                                model.alpha[i], model.active[i],
+                                                model.max_alpha)
+        end
+        
+        deltaL ./= T(n_samples)
+        
+        # Find best feature update
+        valid_idx = findall(isfinite.(deltaL) .& (deltaL .> eps(T)))
+        
+        if isempty(valid_idx)
             model.converged = true
-            model.verbose && println("Early convergence at iteration $iter")
+            model.verbose && println("Converged at iteration $iter")
             break
+        end
+        
+        feature_idx = valid_idx[argmax(view(deltaL, valid_idx))]
+        
+        # Apply update
+        if theta[feature_idx] > zero(T)
+            model.alpha[feature_idx] = clamp(s[feature_idx]^2 / theta[feature_idx], 
+                                            eps(T), model.max_alpha)
+            model.active[feature_idx] = true
+        elseif model.active[feature_idx] && sum(model.active) > 1
+            model.active[feature_idx] = false
+            model.alpha[feature_idx] = model.max_alpha
+        end
+        
+        # Logging
+        if model.verbose && (iter % 10 == 0 || iter <= 5)
+            println("Iteration $iter: active = $(sum(model.active)), β = $(model.beta)")
         end
     end
     
     # Finalize model
-    finalize_model!(model, cache)
+    active_idx = findall(model.active)
+    if !isempty(active_idx)
+        XXa = XX[active_idx, active_idx]
+        alpha_a = model.alpha[active_idx]
+        Σ_inv = model.beta * XXa + Diagonal(alpha_a) + model.lambda_reg * I
+        
+        try
+            model.sigma = inv(Σ_inv)
+        catch
+            model.sigma = Diagonal(@. inv(model.beta * diag(XXa) + alpha_a))
+        end
+    else
+        model.sigma = Matrix{T}(undef, 0, 0)
+    end
     
     return model
 end
 
 # ============================================================================
-# Prediction Functions
+# Prediction Functions (not type-stable due to dynamic arrays)
 # ============================================================================
 
-"""
-    predict(model::FastARDRegressor, Ψ_test::AbstractMatrix{T}) where T<:Real
-
-Make predictions on test data.
-"""
-function predict(model::FastARDRegressor{T}, Ψ_test::AbstractMatrix{T}) where T<:Real
+function predict(model::FastARDRegressor{T}, X::AbstractMatrix{T}) where T<:Real
     active_idx = findall(model.active)
-    isempty(active_idx) && return zeros(T, size(Ψ_test, 1))
+    isempty(active_idx) && return zeros(T, size(X, 1))
     
-    Ψ_test_active = view(Ψ_test, :, active_idx)
-    return Ψ_test_active * view(model.coef, active_idx)
+    X_active = view(X, :, active_idx)
+    coef_active = view(model.coef, active_idx)
+    return X_active * coef_active
 end
 
-"""
-    predict_with_uncertainty(model::FastARDRegressor, Ψ_test::AbstractMatrix{T}) where T<:Real
-
-Make predictions with uncertainty estimates.
-Returns (y_pred, y_std).
-"""
 function predict_with_uncertainty(model::FastARDRegressor{T}, 
-                                 Ψ_test::AbstractMatrix{T}) where T<:Real
+                                 X::AbstractMatrix{T}) where T<:Real
     active_idx = findall(model.active)
-    n_test = size(Ψ_test, 1)
+    n_test = size(X, 1)
     
     if isempty(active_idx)
         y_pred = zeros(T, n_test)
-        y_std = fill(safe_sqrt(inv(max(model.beta, eps(T)))), n_test)
+        y_std = fill(safe_sqrt(inv(model.beta)), n_test)
         return y_pred, y_std
     end
     
-    Ψ_test_active = view(Ψ_test, :, active_idx)
-    y_pred = Ψ_test_active * view(model.coef, active_idx)
+    X_active = view(X, :, active_idx)
+    coef_active = view(model.coef, active_idx)
+    y_pred = X_active * coef_active
     
-    # Predictive variance with numerical stability
-    var_noise = inv(max(model.beta, eps(T)))
+    # Predictive variance
+    var_noise = inv(model.beta)
+    var_param = zeros(T, n_test)
     
     if !isempty(model.sigma)
-        # Correct predictive variance: diag(Ψ * Σ * Ψ')
-        var_param = zeros(T, n_test)
-        for i in 1:n_test
-            ψ_i = view(Ψ_test_active, i, :)
-            var_param[i] = dot(ψ_i, model.sigma * ψ_i)
+        @inbounds for i in 1:n_test
+            x_i = view(X_active, i, :)
+            var_param[i] = dot(x_i, model.sigma * x_i)
         end
-        clamp!(var_param, zero(T), typemax(T))
-        y_std = @. safe_sqrt(var_noise + var_param)
-    else
-        y_std = fill(safe_sqrt(var_noise), n_test)
     end
     
+    y_std = @. safe_sqrt(var_noise + var_param)
     return y_pred, y_std
 end
 
-"""
-    get_active_coefficients(model::FastARDRegressor)
-
-Get the indices and values of non-zero coefficients.
-"""
 function get_active_coefficients(model::FastARDRegressor)
     active_idx = findall(model.active)
     return active_idx, view(model.coef, active_idx)
 end
 
-# ============================================================================
-# Log Marginal Likelihood
-# ============================================================================
-
-
-@stable function compute_log_marginal_likelihood(Ψ_active::AbstractArray{T},
-                                                y::AbstractArray{T},
-                                                alpha_active::AbstractArray{T},
-                                                beta::U, μ_active::AbstractArray{T},
-                                                Σ_diag::AbstractArray{T},
-                                                lambda_reg::V) where {T<:Real,V<:Real,U<:Real}
-    n_samples = length(y)
-    n_active = length(alpha_active)
-    
-    n_active == 0 && return -T(Inf)
-
-    # Residual sum of squares
-    residual = y - Ψ_active * μ_active
-    rss = dot(residual, residual)
-    
-    # Log determinant computation
-    Σ_inv = beta * (Ψ_active' * Ψ_active) + Diagonal(alpha_active .+ lambda_reg)
-
-    log_det = try
-        L = cholesky(Σ_inv).L
-        T(2) * sum(log ∘ abs, diag(L))
-    catch
-        # Fallback using eigenvalues
-        eigenvals_matrix = eigvals(Symmetric(Matrix(Σ_inv)))
-        eigenvals_safe = max.(eigenvals_matrix, lambda_reg)
-        sum(log, eigenvals_safe)
-    end
-    
-    # Ensure alpha_active is positive for log
-    alpha_safe = max.(alpha_active, lambda_reg)
-    
-    # Log marginal likelihood
-    log_ml = -T(0.5) * (T(n_samples) * log(T(2π)) - 
-                        T(n_samples) * log(max(beta, eps(T))) +
-                        sum(log, alpha_safe) - log_det +
-                        beta * rss + dot(μ_active, alpha_active .* μ_active))
-    
-    return isfinite(log_ml) ? log_ml : -T(Inf)
-end
-
-# ============================================================================
-# Module Initialization
-# ============================================================================
-
-function __init__()
-    # Enable high-precision transcendental functions for MultiFloat types
-    # This is called after the module loads, avoiding precompilation issues
-    MultiFloats.use_bigfloat_transcendentals()
-end
-	
 end # module
