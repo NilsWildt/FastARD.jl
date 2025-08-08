@@ -116,7 +116,7 @@ model = FastARDRegressor(min_beta=1e-8, max_beta=1e8)
 function FastARDRegressor(
         T::Type{<:Real} = Float64;
         n_iter::Int = 300,
-        tol::Real = 1.0e-3,
+        tol::Real = 1.0e-6,
         verbose::Bool = false,
         compute_score::Bool = false,
         standardize::Bool = true,
