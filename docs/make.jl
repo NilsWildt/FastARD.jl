@@ -3,6 +3,21 @@ using Documenter
 
 DocMeta.setdocmeta!(FastARD, :DocTestSetup, :(using FastARD); recursive = true)
 
+# Workaround for JSON serialization issue with Julia 1.12 and JSON.jl 1.0
+if VERSION >= v"1.12"
+    import JSON
+    # Store the original json method
+    const original_json = JSON.json
+    
+    # Define a new json method that handles Dict{Symbol, Any}
+    function JSON.json(d::Dict{Symbol, Any}, indent::Int)
+        # Convert to a regular Dict with string keys
+        str_dict = Dict{String, Any}(string(k) => v for (k, v) in d)
+        # Call the original method with the converted dict
+        return original_json(str_dict, indent)
+    end
+end
+
 makedocs(;
     modules = [FastARD],
     authors = "Nils Wildt <nils.wildt@iws.uni-stuttgart.de>",

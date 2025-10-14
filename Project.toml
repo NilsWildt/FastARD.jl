@@ -1,9 +1,10 @@
 name = "FastARD"
 uuid = "6d2a161c-3ce1-50b2-bbf0-8e0ec10ad4d2"
-authors = ["Nils Wildt <nils.wildt@iws.uni-stuttgart.de>"]
 version = "0.1.0"
+authors = ["Nils Wildt <nils.wildt@iws.uni-stuttgart.de>"]
 
 [deps]
+APCE = "e0c64dd9-0151-4106-bdf9-1cf426dd9187"
 AppleAccelerate = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
 BLISBLAS = "6f275bd8-fec0-4d39-945b-7e95a765fa1e"
 CPUSummary = "2a0fbf3d-bb9c-48f3-b0a9-814d99fd7ab9"
@@ -26,6 +27,4 @@ TimerOutputs = "a759f4b9-e2f1-59dc-863e-4aeb61b1ea8f"
 TypeUtils = "c3b1956e-8857-4d84-9b79-890df85b1e67"
 
 [compat]
-MuladdMacro = "0.2.4"
-TimerOutputs = "0.5.29"
-julia = "1.11"
+julia = "1.12"

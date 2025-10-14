@@ -327,7 +327,7 @@ println()
 # Method 1: FastARD
 # ============================================================================
 
-println("🔸 FastARD Regression")
+println("FastARD Regression")
 println("-"^30)
 
 # Time FastARD training and prediction
@@ -360,7 +360,7 @@ println()
 # Method 2: Pseudoinverse (Pinv)
 # ============================================================================
 
-println("🔸 Pseudoinverse Regression")
+println("Pseudoinverse Regression")
 println("-"^30)
 
 # Time Pinv method
@@ -395,7 +395,7 @@ println()
 # Method 3: Additional Advanced Methods
 # ============================================================================
 
-println("🔸 Advanced Regression Methods")
+println("Advanced Regression Methods")
 println("-"^30)
 
 # Initialize storage for all methods
@@ -531,7 +531,7 @@ println()
 # Method 4: PCE Analysis using proper aPCE
 # ============================================================================
 
-println("🔸 PCE Statistical Analysis")
+println("PCE Statistical Analysis")
 println("-"^30)
 
 # Create proper aPCE models for comparison
@@ -581,7 +581,7 @@ println()
 # Uncertainty Calibration Analysis
 # ============================================================================
 
-println("🔸 Uncertainty Calibration")
+println("Uncertainty Calibration")
 println("-"^30)
 
 # Check FastARD uncertainty calibration
@@ -607,7 +607,7 @@ println()
 # Sparsity Analysis
 # ============================================================================
 
-println("🔸 Sparsity and Efficiency Analysis")
+println("Sparsity and Efficiency Analysis")
 println("-"^30)
 
 effective_rank_ard = sum(model_ard.active)
@@ -641,7 +641,7 @@ println()
 # Polynomial Basis Visualization
 # ============================================================================
 
-println("🎨 Creating Legendre polynomial visualization...")
+println(" Creating Legendre polynomial visualization...")
 
 # Create figure for polynomial basis visualization
 fig_poly = Figure(size=(1200, 800), fontsize=12)
@@ -705,35 +705,55 @@ heatmap!(ax_ortho, 1:n_vis, 1:n_vis, gram_matrix,
          colormap=:RdBu, colorrange=(-0.5, 0.5))
 
 save("examples/legendre_polynomials_analysis.pdf", fig_poly)
-println("📊 Legendre polynomial analysis saved as 'legendre_polynomials_analysis.pdf'")
+println("Legendre polynomial analysis saved as 'legendre_polynomials_analysis.pdf'")
 
 # ============================================================================
 # Timing Breakdown Visualization
 # ============================================================================
 
-println("🎨 Creating timing breakdown visualization...")
+println("Creating timing breakdown visualization...")
 
 # Helper function to get timing data from TimerOutput
 function get_timer_data(timer_name::String)
     try
-        timer_data = TO[timer_name]
-        total_time = timer_data.time
+        # Access the timer data through inner_timers
+        if haskey(TO.inner_timers, timer_name)
+            timer_data = TO.inner_timers[timer_name]
+            # Check if this timer has accumulated_data with time
+            if hasfield(typeof(timer_data), :accumulated_data)
+                total_time = timer_data.accumulated_data.time
+            else
+                return (0.0, 0.0, 0.0)
+            end
+        else
+            return (0.0, 0.0, 0.0)
+        end
         
         # Try to get training and prediction times
         training_time = 0.0
         prediction_time = 0.0
         
-        # Check if sub-timers exist
-        if haskey(timer_data.inner_timers, timer_name * " Training")
-            training_time = timer_data.inner_timers[timer_name * " Training"].time
+        # Look for training timer in the main timer's inner_timers
+        training_timer_name = timer_name * " Training"
+        if haskey(timer_data.inner_timers, training_timer_name)
+            training_timer = timer_data.inner_timers[training_timer_name]
+            if hasfield(typeof(training_timer), :accumulated_data)
+                training_time = training_timer.accumulated_data.time
+            end
         end
-        if haskey(timer_data.inner_timers, timer_name * " Prediction") 
-            prediction_time = timer_data.inner_timers[timer_name * " Prediction"].time
+        
+        # Look for prediction timer in the main timer's inner_timers
+        prediction_timer_name = timer_name * " Prediction"
+        if haskey(timer_data.inner_timers, prediction_timer_name)
+            prediction_timer = timer_data.inner_timers[prediction_timer_name]
+            if hasfield(typeof(prediction_timer), :accumulated_data)
+                prediction_time = prediction_timer.accumulated_data.time
+            end
         end
         
         # Convert nanoseconds to milliseconds
         return (training_time/1e6, prediction_time/1e6, total_time/1e6)
-    catch
+    catch e
         return (0.0, 0.0, 0.0)
     end
 end
@@ -858,13 +878,13 @@ if !isempty(efficiency_scores)
 end
 
 save("examples/timing_analysis.pdf", fig_timing)
-println("📊 Timing analysis saved as 'timing_analysis.pdf'")
+println(" Timing analysis saved as 'timing_analysis.pdf'")
 
 # ============================================================================
 # Main Visualization
 # ============================================================================
 
-println("🎨 Creating comprehensive comparison visualization...")
+println(" Creating comprehensive comparison visualization...")
 
 # Set up the figure with multiple panels
 fig = Figure(size=(1400, 1200), fontsize=12)
@@ -1044,7 +1064,7 @@ Label(fig[3, :], metrics_text, fontsize=10, tellwidth=false)
 
 # Save the plot
 save("examples/ishigami_comparison_results.pdf", fig)
-println("📊 Visualization saved as 'ishigami_comparison_results.pdf'")
+println(" Visualization saved as 'ishigami_comparison_results.pdf'")
 
 # Display convergence if scores available
 if !isempty(model_ard.scores) && length(model_ard.scores) > 1
@@ -1058,7 +1078,7 @@ if !isempty(model_ard.scores) && length(model_ard.scores) > 1
                   color=:blue, linewidth=2, markersize=6)
     
     save("examples/ishigami_convergence.pdf", fig_conv)
-    println("📈 Convergence plot saved as 'ishigami_convergence.pdf'")
+    println(" Convergence plot saved as 'ishigami_convergence.pdf'")
 end
 
 println()
@@ -1067,12 +1087,12 @@ println()
 # Summary
 # ============================================================================
 
-println("🎯 COMPREHENSIVE SUMMARY")
+println(" COMPREHENSIVE SUMMARY")
 println("="^90)
 println("Method           | RMSE      | MAE       | Uncertainty | PCE Var    | Sparsity")
 println("-"^90)
-println("FastARD          | $(round(rmse_ard, digits=4))    | $(round(mae_ard, digits=4))    | $(round(mean(y_std_ard), digits=4))      | $(round(sqrt(uq_ard.OutputVar[1]), digits=4))      | $(effective_rank_ard)/$n_basis")
-println("Pinv             | $(round(rmse_pinv, digits=4))    | $(round(mae_pinv, digits=4))    | $(round(mean(y_std_pinv), digits=4))      | $(round(sqrt(uq_pinv.OutputVar[1]), digits=4))      | $effective_rank_pinv/$n_basis")
+println("FastARD          | $(round(rmse_ard, digits=4))    | $(round(mae_ard, digits=4))    | $(round(mean(y_std_ard), digits=4))      | $(round(uq_ard.OutputVar[1], digits=4))      | $(effective_rank_ard)/$n_basis")
+println("Pinv             | $(round(rmse_pinv, digits=4))    | $(round(mae_pinv, digits=4))    | $(round(mean(y_std_pinv), digits=4))      | $(round(uq_pinv.OutputVar[1], digits=4))      | $effective_rank_pinv/$n_basis")
 
 # Add results from additional methods
 for (name, results) in methods_results
@@ -1090,7 +1110,7 @@ end
 
 best_method, best_overall_rmse = all_methods[argmin([rmse for (_, rmse) in all_methods])]
 
-println("🏆 BEST OVERALL METHOD: $best_method (RMSE: $(round(best_overall_rmse, digits=4)))")
+println(" BEST OVERALL METHOD: $best_method (RMSE: $(round(best_overall_rmse, digits=4)))")
 
 if best_method == "FastARD"
     println("   FastARD achieved best accuracy with $(round((1-compression_ratio)*100, digits=1))% fewer parameters!")
@@ -1106,7 +1126,7 @@ else
 end
 
 println()
-println("📊 SPARSITY ANALYSIS:")
+println(" SPARSITY ANALYSIS:")
 sparse_methods = [("FastARD", effective_rank_ard)]
 for (name, results) in methods_results
     if haskey(results, :sparsity) && results.sparsity < n_basis
@@ -1127,7 +1147,7 @@ end
 # Performance Analysis with TimerOutputs
 # ============================================================================
 
-println("\n⏱️  PERFORMANCE ANALYSIS")
+println("\n PERFORMANCE ANALYSIS")
 println("="^90)
 
 # Display the full timer output
@@ -1135,7 +1155,7 @@ show(TO; allocations=false, compact=false)
 println()
 
 # Create a comprehensive timing and performance table
-println("\n📊 COMPREHENSIVE PERFORMANCE TABLE")
+println("\n COMPREHENSIVE PERFORMANCE TABLE")
 println("="^110)
 println(@sprintf("%-16s | %-8s | %-10s | %-10s | %-10s | %-8s | %-12s", "Method", "RMSE", "Training", "Prediction", "Total", "Sparsity", "Speed Rank"))
 println("-"^110)
@@ -1157,8 +1177,13 @@ for (name, results) in methods_results
     push!(performance_data, (name, results.rmse, training_time, prediction_time, total_time, results.sparsity))
 end
 
-# Sort by total time for speed ranking
-sorted_by_speed = sort(performance_data, by=x->x[5])  # Sort by total time
+# Sort by total time for speed ranking (methods with missing timing data go last)
+valid_timing_data = filter(x -> x[5] > 0, performance_data)
+invalid_timing_data = filter(x -> x[5] <= 0, performance_data)
+
+sorted_by_speed_valid = sort(valid_timing_data, by=x->x[5])  # Sort by total time
+sorted_by_speed = vcat(sorted_by_speed_valid, invalid_timing_data)
+
 speed_ranks = Dict{String, Int}()
 for (i, (method_name, _, _, _, _, _)) in enumerate(sorted_by_speed)
     speed_ranks[method_name] = i
@@ -1176,14 +1201,13 @@ for (method_name, rmse, training_ms, prediction_ms, total_ms, sparsity) in sorte
     prediction_str = prediction_ms > 0 ? @sprintf("%.2f ms", prediction_ms) : "N/A" 
     total_str = total_ms > 0 ? @sprintf("%.2f ms", total_ms) : "N/A"
     sparsity_str = "$sparsity/$n_basis"
-    
     println(@sprintf("%-16s | %-8s | %-10s | %-10s | %-10s | %-8s | %-12s", method_name, rmse_str, training_str, prediction_str, total_str, sparsity_str, "#$speed_rank"))
 end
 
 println()
 
 # Performance insights
-println("🚀 PERFORMANCE INSIGHTS:")
+println(" PERFORMANCE INSIGHTS:")
 fastest_method = sorted_by_speed[1][1]
 fastest_time = sorted_by_speed[1][5]
 println("   Fastest Method: $fastest_method ($(round(fastest_time, digits=2)) ms)")
@@ -1198,28 +1222,28 @@ fastard_accuracy_rank = findfirst(x -> x[1] == "FastARD", sorted_by_rmse)
 println("   FastARD Ranking: #$fastard_accuracy_rank in accuracy, #$fastard_speed_rank in speed")
 
 if fastard_speed_rank <= 3 && fastard_accuracy_rank <= 3
-    println("   🏆 FastARD achieves top-3 performance in both accuracy AND speed!")
+    println("    FastARD achieves top-3 performance in both accuracy AND speed!")
 elseif fastard_accuracy_rank <= 3
-    println("   🎯 FastARD achieves top-3 accuracy with sparsity benefits")
+    println("    FastARD achieves top-3 accuracy with sparsity benefits")
 elseif fastard_speed_rank <= 3
     println("   ⚡ FastARD is among the fastest methods")
 end
 
 # Speed vs accuracy trade-off analysis
-println("\n⚖️  SPEED vs ACCURACY TRADE-OFF:")
+println("\n SPEED vs ACCURACY TRADE-OFF:")
 for (i, (method_name, rmse, _, _, total_ms, sparsity)) in enumerate(sorted_by_rmse[1:3])
     speed_rank = speed_ranks[method_name]
     efficiency_score = (4 - i) * (length(performance_data) + 1 - speed_rank)  # Higher is better
     println("   $method_name: Accuracy rank #$i, Speed rank #$speed_rank, Efficiency score: $efficiency_score")
 end
 
-println("\n✅ Performance analysis completed successfully!")
+println("\nPerformance analysis completed successfully!")
 
 # ============================================================================
 # Uncertainty Bands Comparison Plot
 # ============================================================================
 
-println("\n🎨 Creating uncertainty bands comparison plot...")
+println("\n Creating uncertainty bands comparison plot...")
 
 # Create figure for uncertainty bands comparison
 fig_uncertainty = Figure(size=(1400, 800), fontsize=12)
@@ -1355,10 +1379,10 @@ scatterlines!(ax_unc4, confidence_levels, actual_coverage, color=:blue,
 axislegend(ax_unc4, position=:rb)
 
 save("examples/uncertainty_analysis.pdf", fig_uncertainty)
-println("📊 Uncertainty analysis saved as 'uncertainty_analysis.pdf'")
+println(" Uncertainty analysis saved as 'uncertainty_analysis.pdf'")
 
 # Print uncertainty statistics
-println("\n📊 UNCERTAINTY ANALYSIS SUMMARY:")
+println("\n UNCERTAINTY ANALYSIS SUMMARY:")
 println("="^60)
 
 # FastARD uncertainty statistics
@@ -1378,19 +1402,19 @@ println("  Within 2σ: $(round(within_2sigma*100, digits=1))% (expected: 95.0%)"
 
 # Calibration quality
 if within_1sigma > 0.6 && within_1sigma < 0.75
-    println("  1σ Calibration: ✅ Well calibrated")
+    println("  1σ Calibration: Well calibrated")
 elseif within_1sigma > 0.75
-    println("  1σ Calibration: ⚠️  Conservative (overconfident)")
+    println("  1σ Calibration: ⚠  Conservative (overconfident)")
 else
-    println("  1σ Calibration: ⚠️  Aggressive (underconfident)")
+    println("  1σ Calibration: ⚠  Aggressive (underconfident)")
 end
 
 if within_2sigma > 0.90 && within_2sigma < 0.98
-    println("  2σ Calibration: ✅ Well calibrated")
+    println("  2σ Calibration: Well calibrated")
 elseif within_2sigma > 0.98
-    println("  2σ Calibration: ⚠️  Conservative (overconfident)")
+    println("  2σ Calibration: ⚠  Conservative (overconfident)")
 else
-    println("  2σ Calibration: ⚠️  Aggressive (underconfident)")
+    println("  2σ Calibration: ⚠  Aggressive (underconfident)")
 end
 
-println("\n✅ Uncertainty analysis completed successfully!")
+println("\nUncertainty analysis completed successfully!")

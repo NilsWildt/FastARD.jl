@@ -15,44 +15,9 @@ Depth = 3
 Pages = ["95-reference.md"]
 ```
 
-## Core Types
+## Exported Functions and Types
 
-### FastARDRegressor
-
-```@docs
-FastARDRegressor
-FastARDRegressor(::Type{<:Real})
-```
-
-## Main Functions
-
-### Model Fitting
-
-```@docs
-fit!
-```
-
-### Prediction Functions
-
-```@docs
-predict
-predict_with_uncertainty
-get_active_coefficients
-```
-
-## Utility Functions
-
-```@docs
-only_finite
-```
-
-## Internal Types
-
-For advanced users and developers:
-
-```@docs
-PrecomputedCache
-```
+All exported functions and types are documented below:
 
 ## Method Overview
 
@@ -129,8 +94,6 @@ where:
 - Falls back to pseudo-inverse for ill-conditioned problems
 - Regularization prevents numerical instabilities
 - Supports arbitrary precision arithmetic via MultiFloats.jl
-
-## Complete Function Documentation
 
 ```@autodocs
 Modules = [FastARD]

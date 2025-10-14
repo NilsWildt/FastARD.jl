@@ -129,7 +129,7 @@ function FastARDRegressor(
     return FastARDRegressor{T}(
         Vector{T}(), Vector{T}(), one(T), BitVector(),
         Matrix{T}(undef, 0, 0), Matrix{T}(undef, 1, 0), Matrix{T}(undef, 1, 0), zero(T),
-        n_iter, T(tol), verbose, compute_score, standardize, Vector{T}(), false, 
+        n_iter, T(tol), verbose, compute_score, standardize, Vector{T}(), false,
         T(lambda_reg), T(max_alpha), T(min_beta), T(max_beta)
     )
 end
@@ -296,7 +296,7 @@ end
         model.y_mean = mean(y)
         X_processed = X .- model.X_mean
         y_processed = y .- model.y_mean
-        
+
         model.X_std = std(X_processed, dims = 1)
         # Handle zero variance features by setting std to 1 (they remain constant)
         model.X_std = map(s -> s < eps(T) ? one(T) : s, model.X_std)
@@ -476,7 +476,7 @@ end
     end
     X_active = view(X_processed, :, active_idx)
     coef_active = view(model.coef, active_idx)
-    
+
     # Add back the y_mean to get predictions on original scale
     return X_active * coef_active .+ model.y_mean
 end
@@ -502,7 +502,7 @@ end
     end
     X_active = view(X_processed, :, active_idx)
     coef_active = view(model.coef, active_idx)
-    
+
     # Predictions on processed scale, then add back y_mean
     y_pred_processed = X_active * coef_active
     y_pred = y_pred_processed .+ model.y_mean
@@ -526,10 +526,6 @@ function get_active_coefficients(model::FastARDRegressor)
     active_idx = findall(model.active)
     return active_idx, view(model.coef, active_idx)
 end
-
-# ============================================================================
-# Log Marginal Likelihood
-# ============================================================================
 
 # ============================================================================
 # Log Marginal Likelihood
