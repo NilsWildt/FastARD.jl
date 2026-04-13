@@ -824,8 +824,14 @@ end
 
 
 function __init__()
-    # High-precision transcendental functions for MultiFloat (needed for log(MultiFloat))
-    return MultiFloats.use_bigfloat_transcendentals()
+    # NOTE: use_bigfloat_transcendentals() uses eval() which breaks Julia 1.12 incremental compilation.
+    # Wrapped in try-catch to allow precompilation on Julia >= 1.12.
+    try
+        MultiFloats.use_bigfloat_transcendentals()
+    catch e
+        @warn "MultiFloats.use_bigfloat_transcendentals() failed (Julia 1.12+ compat): $e"
+    end
+    return nothing
 end
 
 end # module
