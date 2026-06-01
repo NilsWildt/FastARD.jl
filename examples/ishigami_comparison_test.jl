@@ -10,6 +10,7 @@ Random.seed!(123)
 
 # Import the proper aPCE implementation
 using ArbitraryPolynomialChaosExpansion
+const APCE = ArbitraryPolynomialChaosExpansion
 
 # Initialize timer for performance analysis
 const TO = TimerOutput()
@@ -528,53 +529,78 @@ end
 println()
 
 # ============================================================================
-# Method 4: PCE Analysis using proper aPCE
+# Method 4: PCE Statistical Analysis
 # ============================================================================
+# NOTE: The aPCE package constructs its own data-driven orthonormal basis,
+# which differs from the Legendre basis used for regression above.
+# We compute UQ from Legendre coefficients with proper normalization instead of
+# copying coefficients between incompatible bases (which was the old approach).
 
 println("PCE Statistical Analysis")
 println("-"^30)
 
-# Create proper aPCE models for comparison
+# --- aPCE (data-driven basis) as standalone method ---
 apc_native = aPCE(X_train, max_degree; outdim=1)
 train!(apc_native, X_train, y_train_noisy; bayesian_inversion=false)
+uq_native = UQ(apc_native)
 
-# Create aPCE structure for FastARD result (sparse)
-apc_ard = aPCE(X_train, max_degree; outdim=1)
-# Copy the sparse coefficients from FastARD to match the PCE basis
-Psi_for_ard = aPCE_PsiPolynomialMatrix(apc_ard, X_train)'
-n_available_terms = min(length(active_indices), apc_ard.NumberOfTerms)
-for (i, idx) in enumerate(active_indices[1:n_available_terms])
-    if idx <= apc_ard.NumberOfTerms
-        apc_ard.ExpansionCoefficients[idx, 1] = active_coefs[i]
+# --- Legendre PCE UQ with proper normalization ---
+# For Legendre polynomials on [-1,1] with uniform measure: E[P_n²] = 1/(2n+1)
+# Var[f] = Σ_{i≥1} c_i² × Π_j 1/(2·d_{i,j} + 1)
+
+"""Degree combinations for the tensor-product Legendre basis (3D)."""
+function pce_degree_combos(max_degree::Int)
+    combos = Vector{Vector{Int}}()
+    for i in 0:max_degree, j in 0:max_degree, k in 0:max_degree
+        if i + j + k <= max_degree
+            push!(combos, [i, j, k])
+        end
     end
+    return combos
 end
 
-# Create aPCE structure for Pinv result (full)
-apc_pinv = aPCE(X_train, max_degree; outdim=1)
-n_copy_terms = min(length(coef_pinv), apc_pinv.NumberOfTerms)
-apc_pinv.ExpansionCoefficients[1:n_copy_terms, 1] = coef_pinv[1:n_copy_terms]
+"""PCE mean and variance from Legendre coefficients with proper normalization."""
+function pce_uq_legendre(coef::AbstractVector, degree_combos::Vector{Vector{Int}})
+    mean_val = length(coef) > 0 ? coef[1] : 0.0
+    var_val = 0.0
+    for i in 2:length(coef)
+        if i <= length(degree_combos)
+            norm_factor = prod(1.0 ./ (2.0 .* degree_combos[i] .+ 1))
+            var_val += coef[i]^2 * norm_factor
+        end
+    end
+    return (OutputMean = [mean_val], OutputVar = [var_val])
+end
 
-# Compute statistics
-uq_native = UQ(apc_native)
-uq_ard = UQ(apc_ard)
-uq_pinv = UQ(apc_pinv)
+degree_combos = pce_degree_combos(max_degree)
 
-println("PCE Statistics (from coefficients):")
-println("Native PCE - Mean: $(uq_native.OutputMean[1]), Variance: $(uq_native.OutputVar[1])")
-println("FastARD PCE - Mean: $(uq_ard.OutputMean[1]), Variance: $(uq_ard.OutputVar[1])")
-println("Pinv PCE - Mean: $(uq_pinv.OutputMean[1]), Variance: $(uq_pinv.OutputVar[1])")
+# FastARD: reconstruct full coefficient vector from sparse selection
+coef_ard_full = zeros(n_basis)
+for (i, idx) in enumerate(active_indices)
+    if idx <= n_basis
+        coef_ard_full[idx] = active_coefs[i]
+    end
+end
+uq_ard = pce_uq_legendre(coef_ard_full, degree_combos)
 
-# Compare with empirical statistics from test data
+# Pinv: use coefficients directly
+uq_pinv = pce_uq_legendre(coef_pinv, degree_combos)
+
+# Empirical statistics from test data
 emp_mean = mean(y_test_true)
 emp_var = var(y_test_true)
-println("True empirical - Mean: $emp_mean, Variance: $emp_var")
 
-# Show PCE uncertainty bounds vs empirical
+println("PCE Statistics (from coefficients):")
+println("aPCE (data-driven) - Mean: $(round(uq_native.OutputMean[1], digits=4)), Variance: $(round(uq_native.OutputVar[1], digits=4))")
+println("FastARD (Legendre) - Mean: $(round(uq_ard.OutputMean[1], digits=4)), Variance: $(round(uq_ard.OutputVar[1], digits=4))")
+println("Pinv (Legendre)    - Mean: $(round(uq_pinv.OutputMean[1], digits=4)), Variance: $(round(uq_pinv.OutputVar[1], digits=4))")
+println("True empirical     - Mean: $(round(emp_mean, digits=4)), Variance: $(round(emp_var, digits=4))")
+
 println("\nPCE Uncertainty Bounds (±1σ):")
-println("Native PCE: $(uq_native.OutputMean[1]) ± $(sqrt(uq_native.OutputVar[1]))")
-println("FastARD PCE: $(uq_ard.OutputMean[1]) ± $(sqrt(uq_ard.OutputVar[1]))")
-println("Pinv PCE: $(uq_pinv.OutputMean[1]) ± $(sqrt(uq_pinv.OutputVar[1]))")
-println("Empirical: $emp_mean ± $(sqrt(emp_var))")
+println("aPCE (data-driven): $(round(uq_native.OutputMean[1], digits=4)) ± $(round(sqrt(uq_native.OutputVar[1]), digits=4))")
+println("FastARD (Legendre): $(round(uq_ard.OutputMean[1], digits=4)) ± $(round(sqrt(uq_ard.OutputVar[1]), digits=4))")
+println("Pinv (Legendre):    $(round(uq_pinv.OutputMean[1], digits=4)) ± $(round(sqrt(uq_pinv.OutputVar[1]), digits=4))")
+println("Empirical:          $(round(emp_mean, digits=4)) ± $(round(sqrt(emp_var), digits=4))")
 println()
 
 # ============================================================================
@@ -1400,21 +1426,21 @@ println("\nCoverage Analysis:")
 println("  Within 1σ: $(round(within_1sigma*100, digits=1))% (expected: 68.0%)")
 println("  Within 2σ: $(round(within_2sigma*100, digits=1))% (expected: 95.0%)")
 
-# Calibration quality
-if within_1sigma > 0.6 && within_1sigma < 0.75
+# Calibration quality (tightened thresholds: ±5% of expected value)
+if within_1sigma > 0.63 && within_1sigma < 0.73
     println("  1σ Calibration: Well calibrated")
-elseif within_1sigma > 0.75
-    println("  1σ Calibration: ⚠  Conservative (overconfident)")
+elseif within_1sigma >= 0.73
+    println("  1σ Calibration: ⚠  Conservative (uncertainty too wide)")
 else
-    println("  1σ Calibration: ⚠  Aggressive (underconfident)")
+    println("  1σ Calibration: ⚠  Aggressive (uncertainty too narrow)")
 end
 
-if within_2sigma > 0.90 && within_2sigma < 0.98
+if within_2sigma > 0.90 && within_2sigma < 1.0
     println("  2σ Calibration: Well calibrated")
-elseif within_2sigma > 0.98
-    println("  2σ Calibration: ⚠  Conservative (overconfident)")
+elseif within_2sigma >= 1.0
+    println("  2σ Calibration: ⚠  Conservative (uncertainty too wide)")
 else
-    println("  2σ Calibration: ⚠  Aggressive (underconfident)")
+    println("  2σ Calibration: ⚠  Aggressive (uncertainty too narrow)")
 end
 
 println("\nUncertainty analysis completed successfully!")

@@ -5,6 +5,7 @@ authors = ["Nils Wildt <nils.wildt@iws.uni-stuttgart.de>"]
 
 [deps]
 AppleAccelerate = "13e28ba4-7ad8-5781-acae-3021b1ed3924"
+ArbitraryPolynomialChaosExpansion = "e0c64dd9-0151-4106-bdf9-1cf426dd9187"
 BLISBLAS = "6f275bd8-fec0-4d39-945b-7e95a765fa1e"
 CPUSummary = "2a0fbf3d-bb9c-48f3-b0a9-814d99fd7ab9"
 ConcreteStructs = "2569d6c7-a4a2-43d3-a901-331e8e4be471"

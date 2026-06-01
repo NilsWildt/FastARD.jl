@@ -9,6 +9,8 @@ using DispatchDoctor
 using MuladdMacro
 using MultiFloats
 using TypeUtils
+const CPU_MODEL = Sys.cpu_info()[1].model
+
 if Sys.isapple() && Sys.ARCH in (:aarch64, :arm64)
     @info "Using `AppleAccelerate.jl` for Apple Silicon."
     using AppleAccelerate
