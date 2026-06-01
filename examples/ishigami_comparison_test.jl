@@ -9,7 +9,7 @@ using Printf
 Random.seed!(123)
 
 # Import the proper aPCE implementation
-using APCE
+using ArbitraryPolynomialChaosExpansion
 
 # Initialize timer for performance analysis
 const TO = TimerOutput()

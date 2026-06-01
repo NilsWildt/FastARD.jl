@@ -1,13 +1,13 @@
 module FastARD
 
 using LinearAlgebra
-using LinearAlgebra: I
+using LinearAlgebra: I, mul!, dot, cholesky!, bunchkaufman!, Hermitian, issuccess,
+    ldiv!, logabsdet
 using Statistics
 using ConcreteStructs
 using DispatchDoctor
 using MuladdMacro
 using MultiFloats
-using GenericLinearAlgebra: eigvals
 using TypeUtils
 if Sys.isapple() && Sys.ARCH in (:aarch64, :arm64)
     @info "Using `AppleAccelerate.jl` for Apple Silicon."
@@ -38,8 +38,11 @@ end
 """
     FastARDRegressor{T<:Real}
 
-Fast Automatic Relevance Determination for sparse Bayesian regression.
-Solves Ψ * c = y where Ψ is a basis matrix, c are coefficients, and y are observations.
+Fast Automatic Relevance Determination for sparse Bayesian regression
+(Tipping & Faul, 2003). Solves Ψ * c = y where Ψ is a basis matrix, c are
+coefficients, and y are observations, using the fast sequential algorithm with
+rank-1 covariance updates, deletion-priority basis selection and an alignment
+(collinearity) guard.
 """
 @concrete mutable struct FastARDRegressor{T <: Real}
     # Model parameters
@@ -81,41 +84,31 @@ Create a new FastARD regressor for sparse Bayesian regression.
 - `T::Type{<:Real}=Float64`: Numeric type for computations (Float64, Float32, etc.)
 
 # Keyword Arguments
-- `n_iter::Int=200`: Maximum number of iterations
-- `tol::Real=1e-6`: Convergence tolerance
-- `verbose::Bool=true`: Whether to print progress information
-- `compute_score::Bool=false`: Whether to compute and store log marginal likelihood scores
-- `standardize::Bool=true`: Whether to standardize features (center and scale). Recommended for numerical stability unless data is already preprocessed
-- `lambda_reg::Real=1e-8`: Regularization parameter for numerical stability
-- `max_alpha::Real=1e12`: Maximum value for precision parameters α
+- `n_iter::Int=1000`: Maximum number of sequential update iterations
+- `tol::Real=1e-6`: Reserved for interface compatibility (the algorithm uses
+  evidence-based stopping thresholds internally)
+- `verbose::Bool=false`: Whether to print progress information
+- `compute_score::Bool=false`: Whether to store the running log marginal likelihood
+- `standardize::Bool=true`: Whether to center and scale features. Recommended for
+  numerical stability unless data is already preprocessed
+- `lambda_reg::Real=1e-8`: Ridge added to the precision matrix only if the
+  Cholesky factorization is not positive definite (numerical safeguard)
+- `max_alpha::Real=1e12`: Reported precision for inactive coefficients
 - `min_beta::Real=1e-6`: Minimum value for noise precision β
 - `max_beta::Real=1e6`: Maximum value for noise precision β
 
-# Returns
-- `FastARDRegressor{T}`: Initialized model ready for fitting
-
 # Examples
 ```julia
-# Create a basic model (standardization enabled by default)
 model = FastARDRegressor()
-
-# Create with custom parameters
 model = FastARDRegressor(Float32; n_iter=100, verbose=false)
-
-# Use raw data without centering/scaling (only if data is already preprocessed)
 model = FastARDRegressor(standardize=false)
-
-# Create with high precision
 using MultiFloats
 model = FastARDRegressor(MultiFloat{Float64,4})
-
-# Create with custom beta bounds
-model = FastARDRegressor(min_beta=1e-8, max_beta=1e8)
 ```
 """
 function FastARDRegressor(
         T::Type{<:Real} = Float64;
-        n_iter::Int = 300,
+        n_iter::Int = 1000,
         tol::Real = 1.0e-6,
         verbose::Bool = false,
         compute_score::Bool = false,
@@ -135,349 +128,656 @@ function FastARDRegressor(
 end
 
 # ============================================================================
-# Type-stable helper functions
+# Internal workspace (preallocated, concrete buffers — type-stable)
 # ============================================================================
 
-@stable @muladd function compute_posterior_cholesky(
-        Σ_inv::AbstractMatrix{T},
-        XYa::AbstractVector{T},
-        beta::T
-    ) where {T <: Real}
-    # Primary path: Cholesky decomposition
-    L = cholesky(Σ_inv).L
-    z = L \ (beta * XYa)
-    μ = L' \ z
-
-    L_inv = inv(L)
-    Σ_diag = vec(sum(abs2, L_inv, dims = 2))
-
-    return μ, max.(Σ_diag, eps(T)), true
+@concrete struct ARDWorkspace
+    Ψ            # n_samples × n_features (internally column-scaled design)
+    output_proj  # n_features            (Ψ' y)
+    cross        # n_features × K_max    (Ψ' Ψ_active, columns ↔ active terms)
+    sparseΨ      # n_samples × K_max     (Ψ_active)
+    betaproj     # n_features × K_max    (β · cross)
+    Cov          # K_max × K_max         (posterior covariance over active set)
+    cholW        # K_max × K_max         (scratch for Cholesky)
+    M            # n_features × K_max    (scratch: cross · Cov)
+    s_in         # n_features
+    q_in         # n_features
+    s_out        # n_features
+    q_out        # n_features
+    theta        # n_features
+    proj_nf      # n_features            (scratch)
+    proj_nf2     # n_features            (scratch)
+    cov_col      # K_max                 (scratch)
+    cross_cov    # K_max                 (scratch)
+    mean_change  # K_max                 (scratch)
+    Gmean        # K_max                 (scratch)
 end
 
-
-@stable @muladd function compute_posterior_fallback(
-        Σ_inv::AbstractMatrix{T},
-        XYa::AbstractVector{T},
-        beta::T
-    ) where {T <: Real}
-    # For MultiFloat types, avoid SVD-based pinv and use regularized inverse
-    if T <: MultiFloat
-        # Add regularization and use direct inverse
-        reg_amount = T(1.0e-8) * maximum(diag(Σ_inv))
-        Σ_inv_reg = Σ_inv + reg_amount * I
-        try
-            Σ = inv(Σ_inv_reg)
-            μ_a = beta * Σ * XYa
-            Σ_diag = diag(Σ)
-            return μ_a, max.(Σ_diag, eps(T)), false
-        catch
-            # Last resort: diagonal approximation
-            μ_a = beta * XYa ./ diag(Σ_inv_reg)
-            Σ_diag = inv.(diag(Σ_inv_reg))
-            return μ_a, max.(Σ_diag, eps(T)), false
-        end
-    else
-        # For standard Float types, use pinv
-        try
-            Σ = pinv(Σ_inv)
-            μ_a = beta * Σ * XYa
-            Σ_diag = diag(Σ)
-            return μ_a, max.(Σ_diag, eps(T)), false
-        catch
-            # Fallback to diagonal approximation
-            μ_a = beta * XYa ./ diag(Σ_inv)
-            Σ_diag = inv.(diag(Σ_inv))
-            return μ_a, max.(Σ_diag, eps(T)), false
-        end
-    end
+function ARDWorkspace(Ψ::AbstractMatrix{T}, output_proj::Vector{T}, Kmax::Int) where {T}
+    ns, nf = size(Ψ)
+    return ARDWorkspace(
+        Ψ, output_proj,
+        Matrix{T}(undef, nf, Kmax),   # cross
+        Matrix{T}(undef, ns, Kmax),   # sparseΨ
+        Matrix{T}(undef, nf, Kmax),   # betaproj
+        Matrix{T}(undef, Kmax, Kmax), # Cov
+        Matrix{T}(undef, Kmax, Kmax), # cholW
+        Matrix{T}(undef, nf, Kmax),   # M
+        Vector{T}(undef, nf),         # s_in
+        Vector{T}(undef, nf),         # q_in
+        Vector{T}(undef, nf),         # s_out
+        Vector{T}(undef, nf),         # q_out
+        Vector{T}(undef, nf),         # theta
+        Vector{T}(undef, nf),         # proj_nf
+        Vector{T}(undef, nf),         # proj_nf2
+        Vector{T}(undef, Kmax),       # cov_col
+        Vector{T}(undef, Kmax),       # cross_cov
+        Vector{T}(undef, Kmax),       # mean_change
+        Vector{T}(undef, Kmax),       # Gmean
+    )
 end
-
-@stable @muladd function update_sparsity_quality!(
-        S::Vector{T}, Q::Vector{T},
-        XX::AbstractMatrix{T},
-        XXd::AbstractVector{T},
-        XY::AbstractVector{T},
-        active_idx::Vector{Int},
-        μ_a::Vector{T},
-        Σ_diag::Vector{T},
-        beta::T
-    ) where {T <: Real}
-    n_features = length(S)
-
-    # Initialize with basic values
-    S .= beta .* XXd
-    Q .= beta .* XY
-
-    if !isempty(active_idx)
-        # Woodbury identity updates using views
-        XXcross = view(XX, :, active_idx)
-
-        # Update Q efficiently
-        mul!(Q, XXcross, μ_a, -beta, one(T))
-
-        # Update S efficiently
-        @inbounds for i in 1:n_features
-            row_i = view(XXcross, i, :)
-            adjustment = beta * beta * dot(row_i, Σ_diag .* row_i)
-            S[i] -= adjustment
-        end
-    end
-
-    # Ensure numerical stability
-    clamp!(S, eps(T), typemax(T))
-end
-
-@stable @muladd function compute_delta_likelihood(
-        Q::T, S::T, theta::T,
-        alpha::T, is_active::Bool,
-        max_alpha::T
-    ) where {T <: Real}
-    if !is_active && theta > zero(T)
-        # Add feature
-        if S > eps(T) && Q * Q > eps(T)
-            return (Q * Q - S) / S + log(S / (Q * Q))
-        end
-    elseif is_active && theta > zero(T)
-        # Recompute feature
-        if theta > eps(T)
-            alpha_new = S * S / theta
-            if eps(T) < alpha_new < max_alpha
-                delta_alpha_inv = inv(alpha_new) - inv(alpha)
-                if abs(delta_alpha_inv) > eps(T)
-                    return Q * Q / (S + inv(delta_alpha_inv)) - log(one(T) + S * delta_alpha_inv)
-                end
-            end
-        end
-    elseif is_active && theta <= zero(T)
-        # Delete feature - only if S < alpha to ensure log argument is positive
-        if alpha < max_alpha && S < alpha
-            ratio = S / alpha
-            if ratio < one(T) - eps(T)  # Ensure log argument is positive
-                return Q * Q / (S - alpha) - log(one(T) - ratio)
-            end
-        end
-    end
-
-    return zero(T)
-end
-
 
 # ============================================================================
-# Main Fitting Function (not type-stable due to dynamic nature)
+# Linear algebra helpers (no try/catch: use Cholesky `check=false` + issuccess)
+# ============================================================================
+
+"""
+    _spd_inverse!(Cov, ws, K, alpha, beta, active_idx, lambda_reg) -> logdetP
+
+Compute `Cov[1:K,1:K] = inv(P)` for the active posterior precision
+`P = β·G + diag(α)` (G the active Gram block of `ws.cross`), and return
+`logdet(P)`. Uses an in-place Cholesky; on a non-PD matrix it retries with a
+ridge then Bunch–Kaufman. Never throws.
+"""
+@muladd function _spd_inverse!(
+        Cov, ws::ARDWorkspace, K::Int,
+        alpha::AbstractVector{T}, beta::T,
+        active_idx::AbstractVector{Int}, lambda_reg::T
+    ) where {T <: Real}
+    W = view(ws.cholW, 1:K, 1:K)
+    G = view(ws.cross, view(active_idx, 1:K), 1:K)   # K×K active Gram block
+    @. W = beta * G
+    @inbounds for c in 1:K
+        W[c, c] += alpha[c]
+    end
+
+    Σ = view(Cov, 1:K, 1:K)
+    C = cholesky!(Hermitian(W, :U), check = false)
+    if issuccess(C)
+        logdetP = zero(T)
+        @inbounds for c in 1:K
+            logdetP += log(W[c, c])
+        end
+        logdetP *= 2
+        # Σ = P⁻¹ via in-place triangular solves against the identity (no allocation).
+        _set_identity!(Σ, K)
+        ldiv!(C, Σ)
+        return logdetP
+    end
+
+    # Fallback: ridge + Bunch–Kaufman (indefinite-robust), still no exceptions.
+    @. W = beta * G
+    @inbounds for c in 1:K
+        W[c, c] += alpha[c] + lambda_reg
+    end
+    F = bunchkaufman!(Hermitian(W, :U), check = false)
+    logdetP = first(logabsdet(F))
+    _set_identity!(Σ, K)
+    ldiv!(F, Σ)
+    return logdetP
+end
+
+@inline function _set_identity!(Σ::AbstractMatrix{T}, K::Int) where {T <: Real}
+    fill!(Σ, zero(T))
+    @inbounds for c in 1:K
+        Σ[c, c] = one(T)
+    end
+    return nothing
+end
+
+# ============================================================================
+# Sparse-Bayes statistics: full recompute (init + after a large β change)
+# Port of bayesSparsify.m `computeSparseBayesStatisticsOpt`.
+# ============================================================================
+
+@muladd function _recompute_statistics!(
+        ws::ARDWorkspace, active_idx::AbstractVector{Int},
+        alpha::AbstractVector{T}, mean::AbstractVector{T},
+        beta::T, output_energy::T, lambda_reg::T
+    ) where {T <: Real}
+    K = length(active_idx)
+    nf = length(ws.output_proj)
+    aidx = view(active_idx, 1:K)
+    cross = view(ws.cross, :, 1:K)
+
+    logdetP = _spd_inverse!(ws.Cov, ws, K, alpha, beta, active_idx, lambda_reg)
+    Cov = view(ws.Cov, 1:K, 1:K)
+
+    # mean = β · Σ · output_proj[active]
+    aproj = view(ws.output_proj, aidx)
+    meanv = view(mean, 1:K)
+    mul!(meanv, Cov, aproj)
+    @. meanv *= beta
+
+    # betaproj = β · cross
+    bproj = view(ws.betaproj, :, 1:K)
+    @. bproj = beta * cross
+
+    # s_in_i = β − β² · (crossᵢ · Σ · crossᵢ)   via M = cross·Σ
+    M = view(ws.M, :, 1:K)
+    mul!(M, cross, Cov)
+    @inbounds for i in 1:nf
+        acc = zero(T)
+        for c in 1:K
+            acc += M[i, c] * cross[i, c]
+        end
+        ws.s_in[i] = beta - beta * beta * acc
+    end
+
+    # q_in = β · (output_proj − cross·mean)
+    mul!(ws.proj_nf, cross, meanv)
+    @. ws.q_in = beta * (ws.output_proj - ws.proj_nf)
+
+    _refresh_out_factors!(ws, active_idx, alpha, K)
+
+    # Residual energy and log marginal likelihood (matches the MATLAB reference)
+    mul!(view(ws.Gmean, 1:K), view(ws.cross, aidx, 1:K), meanv)  # G·mean
+    resid_energy = output_energy - 2 * dot(meanv, aproj) + dot(meanv, view(ws.Gmean, 1:K))
+    data_like = (size(ws.Ψ, 1) * log(beta) - beta * resid_energy) / 2
+    quad = zero(T)
+    sum_log_alpha = zero(T)
+    @inbounds for c in 1:K
+        quad += meanv[c] * meanv[c] * alpha[c]
+        sum_log_alpha += log(alpha[c])
+    end
+    log_ml = data_like - quad / 2 + sum_log_alpha / 2 - logdetP / 2
+    return log_ml
+end
+
+"""
+    _refresh_out_factors!(ws, active_idx, alpha, K)
+
+Recompute `s_out`, `q_out`, `theta` (the per-candidate excluded-basis factors)
+from the maintained `s_in`/`q_in` via the active-feature rescaling.
+"""
+@muladd function _refresh_out_factors!(
+        ws::ARDWorkspace, active_idx::AbstractVector{Int},
+        alpha::AbstractVector{T}, K::Int
+    ) where {T <: Real}
+    @. ws.s_out = ws.s_in
+    @. ws.q_out = ws.q_in
+    @inbounds for p in 1:K
+        t = active_idx[p]
+        denom = alpha[p] - ws.s_in[t]
+        scale = alpha[p] / denom
+        ws.s_out[t] = scale * ws.s_in[t]
+        ws.q_out[t] = scale * ws.q_in[t]
+    end
+    @. ws.theta = ws.q_out^2 - ws.s_out
+    return nothing
+end
+
+# ============================================================================
+# In-place buffer compaction helpers (deletion of an active term)
+# ============================================================================
+
+@inline function _drop_col!(A::AbstractMatrix, j::Int, K::Int)
+    @inbounds for c in j:(K - 1)
+        @views A[:, c] .= A[:, c + 1]
+    end
+    return nothing
+end
+
+@inline function _drop_rowcol!(Cov::AbstractMatrix, j::Int, K::Int)
+    @inbounds for c in j:(K - 1)            # shift columns left
+        for r in 1:K
+            Cov[r, c] = Cov[r, c + 1]
+        end
+    end
+    @inbounds for c in 1:(K - 1)            # shift rows up
+        for r in j:(K - 1)
+            Cov[r, c] = Cov[r + 1, c]
+        end
+    end
+    return nothing
+end
+
+# ============================================================================
+# Main Fitting Function (vector target)
 # ============================================================================
 
 @muladd function fit!(
         model::FastARDRegressor{T},
         X::AbstractMatrix{T},
-        y::AbstractVecOrMat{T}
-    ) where {T <: Real}  # Note: AbstractVecOrMat
-
-    # Handle matrix y by fitting each column separately
-    if y isa AbstractMatrix
-        n_outputs = size(y, 2)
-        models = Vector{typeof(model)}(undef, n_outputs)
-
-        for i in 1:n_outputs
-            if model.verbose
-                println("Fitting output $i/$n_outputs")
-            end
-            model_copy = deepcopy(model)
-            models[i] = fit!(model_copy, X, view(y, :, i))
-        end
-        return models
-    end
-
+        y::AbstractVector{T}
+    ) where {T <: Real}
 
     n_samples, n_features = size(X)
 
-    # Optionally standardize features (center and scale)
+    # --- Preprocessing: optional standardization (API-level) -----------------
     if model.standardize
         model.X_mean = mean(X, dims = 1)
         model.y_mean = mean(y)
-        X_processed = X .- model.X_mean
-        y_processed = y .- model.y_mean
-
-        model.X_std = std(X_processed, dims = 1)
-        # Handle zero variance features by setting std to 1 (they remain constant)
+        Xp = X .- model.X_mean
+        yp = y .- model.y_mean
+        model.X_std = std(Xp, dims = 1)
         model.X_std = map(s -> s < eps(T) ? one(T) : s, model.X_std)
-        X_processed = X_processed ./ model.X_std
+        Xp = Xp ./ model.X_std
     else
-        # Use raw data as-is
         model.X_mean = zeros(T, 1, n_features)
         model.X_std = ones(T, 1, n_features)
         model.y_mean = zero(T)
-        X_processed = X
-        y_processed = y
+        Xp = Matrix{T}(X)
+        yp = Vector{T}(y)
     end
 
-    # Precompute matrices
-    XX = X_processed' * X_processed
-    XY = X_processed' * y_processed
-    XXd = diag(XX)
-
-    # Initialize model
-    var_y = var(y_processed)
-    model.beta = var_y > eps(T) ? inv(var_y) : T(10)
-    model.alpha = fill(model.max_alpha, n_features)
-    model.active = falses(n_features)
-    model.coef = zeros(T, n_features)
     empty!(model.scores)
     model.converged = false
 
-    # Initialize first feature
-    proj = @. XY * XY / (XXd + eps(T))
-    start_idx = argmax(proj)
-    model.active[start_idx] = true
-    model.alpha[start_idx] = XXd[start_idx] / max(proj[start_idx] - var_y, eps(T))
+    # --- Internal column-L2 scaling (conditioning, like the references) ------
+    scales = vec(sqrt.(sum(abs2, Xp, dims = 1)))
+    @inbounds for j in eachindex(scales)
+        scales[j] < eps(T) && (scales[j] = one(T))
+    end
+    Ψ = Xp ./ reshape(scales, 1, :)
 
-    # Pre-allocate work arrays
-    S = zeros(T, n_features)
-    Q = zeros(T, n_features)
-    s = zeros(T, n_features)
-    q = zeros(T, n_features)
-    deltaL = zeros(T, n_features)
+    output_proj = Ψ' * yp
+    output_energy = dot(yp, yp)
+    var_y = var(yp)
 
-    # Main iteration loop
+    # Degenerate (near-constant) target: nothing to fit.
+    if var_y < eps(T) || all(<(eps(T)), abs.(output_proj))
+        model.alpha = fill(model.max_alpha, n_features)
+        model.active = falses(n_features)
+        model.coef = zeros(T, n_features)
+        model.sigma = Matrix{T}(undef, 0, 0)
+        model.beta = clamp(inv(max(var_y, eps(T))), model.min_beta, model.max_beta)
+        return model
+    end
+
+    # --- Algorithm constants (Tipping & Faul / bayesSparsify.m) --------------
+    zero_factor = T(1.0e-12)
+    min_dlog_alpha = T(1.0e-3)
+    min_dlog_beta = T(1.0e-6)
+    alignment_max = one(T) - T(1.0e-3)
+    initial_alpha_max = T(1.0e3)
+    snr = T(0.1)
+    max_beta = T(1.0e6) / var_y
+
+    Kmax = min(n_features, n_samples)
+    ws = ARDWorkspace(Ψ, output_proj, Kmax)
+
+    # --- Initialization: single most-correlated term -------------------------
+    std_y = max(T(1.0e-6), std(yp))
+    beta = inv((std_y * snr)^2)
+
+    t0 = argmax(abs.(output_proj))
+    active_idx = Int[]
+    sizehint!(active_idx, Kmax)
+    push!(active_idx, t0)
+    alpha = T[]
+    sizehint!(alpha, Kmax)
+    mean_vec = T[]
+    sizehint!(mean_vec, Kmax)
+
+    scaled_power = beta                              # unit-norm columns ⇒ β·‖ψ‖²=β
+    scaled_proj = beta * output_proj[t0]
+    a0 = scaled_power^2 / (scaled_proj^2 - scaled_power)
+    a0 = a0 < zero(T) ? initial_alpha_max : a0
+    push!(alpha, a0)
+    push!(mean_vec, zero(T))
+
+    mul!(view(ws.cross, :, 1), Ψ', view(Ψ, :, t0))
+    @views ws.sparseΨ[:, 1] .= Ψ[:, t0]
+
+    log_ml = _recompute_statistics!(
+        ws, active_idx, alpha, mean_vec, beta, output_energy, model.lambda_reg
+    )
+
+    # Alignment bookkeeping (deferred near-duplicate candidates)
+    aligned_out = Int[]
+    aligned_in = Int[]
+
+    # Action codes
+    ACT_REEST = 0
+    ACT_ADD = 1
+    ACT_DELETE = -1
+    ACT_TERM = 10
+    ACT_NOISE = 11
+    ACT_ALIGN = 12
+
+    iters_run = 0
     for iter in 1:model.n_iter
-        active_idx = findall(model.active)
-        isempty(active_idx) && break
+        iters_run = iter
+        K = length(active_idx)
+        action = ACT_TERM
+        sel_term = 0
+        sel_pos = 0
+        delta_lml = zero(T)
 
-        # Extract active submatrices using views
-        XXa = view(XX, active_idx, active_idx)
-        XYa = view(XY, active_idx)
-        X_active = view(X_processed, :, active_idx)
-        alpha_a = view(model.alpha, active_idx)
-
-        # Compute posterior
-        Σ_inv = model.beta * XXa + Diagonal(alpha_a) + model.lambda_reg * I
-
-        local μ_a::Vector{T}, Σ_diag::Vector{T}
-        try
-            μ_a, Σ_diag, _ = compute_posterior_cholesky(Σ_inv, XYa, model.beta)
-        catch
-            μ_a, Σ_diag, _ = compute_posterior_fallback(Σ_inv, XYa, model.beta)
+        # --- STEP 1: deletion priority --------------------------------------
+        any_can_delete = false
+        if K > 1
+            best_del = zero(T)
+            best_pos = 0
+            @inbounds for p in 1:K
+                t = active_idx[p]
+                if ws.theta[t] <= zero_factor
+                    any_can_delete = true
+                    qo = ws.q_out[t]
+                    so = ws.s_out[t]
+                    a = alpha[p]
+                    d = -(qo * qo / (so + a) - log(one(T) + so / a)) / 2
+                    if d > best_del
+                        best_del = d
+                        best_pos = p
+                    end
+                end
+            end
+            if any_can_delete && best_del > zero(T)
+                delta_lml = best_del
+                sel_pos = best_pos
+                sel_term = active_idx[best_pos]
+                action = ACT_DELETE
+            end
         end
 
-        # Update coefficients
-        fill!(model.coef, zero(T))
-        @inbounds for (i, idx) in enumerate(active_idx)
-            model.coef[idx] = μ_a[i]
-        end
+        # --- STEP 2: add / re-estimate (only if no useful deletion) ----------
+        if !any_can_delete
+            best_dl = typemin(T)
+            best_t = 0
+            best_active = false
+            best_p = 0
+            # 2a. re-estimate active terms with positive relevance
+            @inbounds for p in 1:K
+                t = active_idx[p]
+                if ws.theta[t] > zero_factor
+                    cand_alpha = ws.s_out[t]^2 / ws.theta[t]
+                    dinv = inv(cand_alpha) - inv(alpha[p])
+                    si = ws.s_in[t]
+                    qi = ws.q_in[t]
+                    dl = (dinv * qi * qi / (dinv * si + one(T)) - log(one(T) + si * dinv)) / 2
+                    if isfinite(dl) && dl > best_dl
+                        best_dl = dl
+                        best_t = t
+                        best_active = true
+                        best_p = p
+                    end
+                end
+            end
+            # 2b. add candidates (positive relevance, inactive, not deferred)
+            if K < Kmax
+                @inbounds for t in 1:n_features
+                    (ws.theta[t] > zero_factor) || continue
+                    (t in active_idx) && continue
+                    (t in aligned_out) && continue
+                    ratio = ws.q_in[t]^2 / ws.s_in[t]
+                    dl = (ratio - one(T) - log(ratio)) / 2
+                    if isfinite(dl) && dl > best_dl
+                        best_dl = dl
+                        best_t = t
+                        best_active = false
+                        best_p = 0
+                    end
+                end
+            end
 
-        # Update S and Q
-        update_sparsity_quality!(S, Q, XX, XXd, XY, active_idx, μ_a, Σ_diag, model.beta)
-
-        # Compute s and q
-        s .= S
-        q .= Q
-
-        @inbounds for i in active_idx
-            if model.alpha[i] < model.max_alpha
-                denom = model.alpha[i] - S[i]
-                if abs(denom) > eps(T) * max(model.alpha[i], S[i])
-                    s[i] = model.alpha[i] * S[i] / denom
-                    q[i] = model.alpha[i] * Q[i] / denom
+            if best_dl > zero(T) && best_t != 0
+                delta_lml = best_dl
+                sel_term = best_t
+                if best_active
+                    action = ACT_REEST
+                    sel_pos = best_p
+                else
+                    action = ACT_ADD
                 end
             end
         end
 
-        # Update noise precision
-        residual = y_processed - X_active * μ_a
-        rss = dot(residual, residual)
-        n_active = sum(model.active)
-        model.beta = (n_samples - n_active + dot(alpha_a, Σ_diag)) / (rss + eps(T))
-        model.beta = clamp(model.beta, model.min_beta, model.max_beta)
-
-        if model.compute_score
-            score = compute_log_marginal_likelihood(
-                X_active, y_processed,
-                collect(alpha_a), model.beta,
-                μ_a, Σ_diag
-            )
-            push!(model.scores, score)
+        sel_alpha = zero(T)
+        if action == ACT_REEST || action == ACT_ADD
+            sel_alpha = ws.s_out[sel_term]^2 / ws.theta[sel_term]
         end
 
-        # Compute feature updates
-        theta = @. q * q - s
-
-        # Compute change in marginal likelihood
-        fill!(deltaL, zero(T))
-        @inbounds for i in 1:n_features
-            deltaL[i] = compute_delta_likelihood(
-                Q[i], S[i], theta[i],
-                model.alpha[i], model.active[i],
-                model.max_alpha
-            )
+        # --- STEP 2c: re-estimation convergence guard ------------------------
+        if action == ACT_REEST
+            if abs(log(sel_alpha) - log(alpha[sel_pos])) < min_dlog_alpha
+                action = ACT_TERM
+            end
         end
 
-        deltaL ./= T(n_samples)
+        # --- STEP 3: alignment (collinearity) test ---------------------------
+        if action == ACT_ADD
+            n_aligned = 0
+            @inbounds for p in 1:K
+                al = dot(view(Ψ, :, sel_term), view(ws.sparseΨ, :, p))
+                if al > alignment_max
+                    push!(aligned_out, sel_term)
+                    push!(aligned_in, active_idx[p])
+                    n_aligned += 1
+                end
+            end
+            n_aligned > 0 && (action = ACT_ALIGN)
+        elseif action == ACT_DELETE
+            # un-defer candidates that were aligned to the term being deleted
+            keep = aligned_in .!= sel_term
+            if !all(keep)
+                aligned_in = aligned_in[keep]
+                aligned_out = aligned_out[keep]
+            end
+        end
 
-        # Find best feature update
-        valid_idx = findall(isfinite.(deltaL) .& (deltaL .> eps(T)))
+        # --- STEP 4: rank-1 posterior update ---------------------------------
+        if action == ACT_REEST
+            p = sel_pos
+            K1 = K
+            Cov = view(ws.Cov, 1:K1, 1:K1)
+            cc = view(ws.cov_col, 1:K1)
+            cc .= view(Cov, :, p)
+            old_alpha = alpha[p]
+            alpha[p] = sel_alpha
+            dinv = inv(sel_alpha - old_alpha)
+            kappa = inv(Cov[p, p] + dinv)
+            # Cov -= kappa · cc · ccᵀ
+            @inbounds for cj in 1:K1, ri in 1:K1
+                Cov[ri, cj] -= kappa * cc[ri] * cc[cj]
+            end
+            mc = view(ws.mean_change, 1:K1)
+            mp = mean_vec[p]
+            @. mc = -mp * kappa * cc
+            @views mean_vec[1:K1] .+= mc
+            # s_in += kappa · (betaproj·cc)² ; q_in -= betaproj·mc
+            bproj = view(ws.betaproj, :, 1:K1)
+            mul!(ws.proj_nf, bproj, cc)
+            mul!(ws.proj_nf2, bproj, mc)
+            @. ws.s_in += kappa * ws.proj_nf^2
+            @. ws.q_in -= ws.proj_nf2
+            _post_update!(ws, active_idx, alpha, beta, K1)
+            log_ml += delta_lml
 
-        if isempty(valid_idx)
+        elseif action == ACT_ADD
+            K1 = K + 1
+            t = sel_term
+            mul!(view(ws.cross, :, K1), Ψ', view(Ψ, :, t))   # new projection column
+            @views ws.sparseΨ[:, K1] .= Ψ[:, t]
+            Cov = view(ws.Cov, 1:K, 1:K)
+            cc = view(ws.cross_cov, 1:K)
+            # cc = β · Cov · cross[t, 1:K]   (= ((βψ_t'Ψ_active)·Cov)ᵀ)
+            mul!(cc, Cov, view(ws.cross, t, 1:K))
+            @. cc *= beta
+            new_var = inv(sel_alpha + ws.s_in[t])
+            # top-left: Cov += new_var · cc · ccᵀ   (correct Schur sign)
+            @inbounds for cj in 1:K, ri in 1:K
+                ws.Cov[ri, cj] += new_var * cc[ri] * cc[cj]
+            end
+            @inbounds for r in 1:K
+                ncc = -new_var * cc[r]
+                ws.Cov[r, K1] = ncc
+                ws.Cov[K1, r] = ncc
+            end
+            ws.Cov[K1, K1] = new_var
+            new_mean = new_var * ws.q_in[t]
+            @inbounds for r in 1:K
+                mean_vec[r] += -new_mean * cc[r]
+            end
+            push!(mean_vec, new_mean)
+            push!(alpha, sel_alpha)
+            # proj_res = β·cross[:,K1] − (β·cross[:,1:K])·cc
+            bproj = view(ws.betaproj, :, 1:K)
+            mul!(ws.proj_nf2, bproj, cc)
+            @inbounds for i in 1:n_features
+                pr = beta * ws.cross[i, K1] - ws.proj_nf2[i]
+                ws.s_in[i] -= new_var * pr * pr
+                ws.q_in[i] -= new_mean * pr
+            end
+            push!(active_idx, t)
+            _post_update!(ws, active_idx, alpha, beta, K1)
+            log_ml += delta_lml
+
+        elseif action == ACT_DELETE
+            p = sel_pos
+            Cov = view(ws.Cov, 1:K, 1:K)
+            rv = Cov[p, p]
+            rc = view(ws.cov_col, 1:K)
+            rc .= view(Cov, :, p)
+            bproj = view(ws.betaproj, :, 1:K)
+            mul!(ws.proj_nf, bproj, rc)                  # projcol = betaproj·rc
+            rem_mean = mean_vec[p]
+            # Cov -= rc·rcᵀ / rv
+            @inbounds for cj in 1:K, ri in 1:K
+                Cov[ri, cj] -= rc[ri] * rc[cj] / rv
+            end
+            @inbounds for r in 1:K
+                mean_vec[r] += -rem_mean * rc[r] / rv
+            end
+            @inbounds for i in 1:n_features
+                pc = ws.proj_nf[i]
+                ws.s_in[i] += pc * pc / rv
+                ws.q_in[i] += pc * rem_mean / rv
+            end
+            # structural removal of active position p
+            _drop_rowcol!(ws.Cov, p, K)
+            _drop_col!(ws.cross, p, K)
+            _drop_col!(ws.sparseΨ, p, K)
+            deleteat!(active_idx, p)
+            deleteat!(alpha, p)
+            deleteat!(mean_vec, p)
+            _post_update!(ws, active_idx, alpha, beta, K - 1)
+            log_ml += delta_lml
+        end
+
+        # --- STEP 5: noise precision (β) update ------------------------------
+        K = length(active_idx)
+        old_beta = beta
+        aidx = view(active_idx, 1:K)
+        meanv = view(mean_vec, 1:K)
+        mul!(view(ws.Gmean, 1:K), view(ws.cross, aidx, 1:K), meanv)
+        resid_energy = output_energy - 2 * dot(meanv, view(ws.output_proj, aidx)) +
+            dot(meanv, view(ws.Gmean, 1:K))
+        sum_gamma = zero(T)
+        @inbounds for p in 1:K
+            sum_gamma += alpha[p] * ws.Cov[p, p]
+        end
+        sum_gamma = K - sum_gamma
+        beta = (n_samples - sum_gamma) / max(resid_energy, T(1.0e-12))
+        beta = min(beta, max_beta)
+        if abs(log(beta) - log(old_beta)) > min_dlog_beta
+            log_ml = _recompute_statistics!(
+                ws, active_idx, alpha, mean_vec, beta, output_energy, model.lambda_reg
+            )
+            action == ACT_TERM && (action = ACT_NOISE)
+        end
+
+        model.compute_score && push!(model.scores, log_ml)
+
+        if action == ACT_TERM
             model.converged = true
             model.verbose && println("Converged at iteration $iter")
             break
         end
 
-        feature_idx = valid_idx[argmax(view(deltaL, valid_idx))]
-
-        # Apply update
-        if theta[feature_idx] > zero(T)
-            model.alpha[feature_idx] = clamp(
-                s[feature_idx] * s[feature_idx] / theta[feature_idx],
-                eps(T), model.max_alpha
-            )
-            model.active[feature_idx] = true
-        elseif model.active[feature_idx] && sum(model.active) > 1
-            model.active[feature_idx] = false
-            model.alpha[feature_idx] = model.max_alpha
-        end
-
-        # Logging
-        if model.verbose && (iter % 10 == 0 || iter <= 5)
-            println("Iteration $iter: active = $(sum(model.active)), β = $(model.beta)")
+        if model.verbose && (iter % 50 == 0)
+            println("Iteration $iter: active = $(length(active_idx)), β = $beta")
         end
     end
 
-    # Finalize model
-    active_idx = findall(model.active)
-    if !isempty(active_idx)
-        XXa = XX[active_idx, active_idx]
-        alpha_a = model.alpha[active_idx]
-        Σ_inv = model.beta * XXa + Diagonal(alpha_a) + model.lambda_reg * I
+    # --- Finalize: back-transform to the standardized (Xp) scale -------------
+    K = length(active_idx)
+    model.alpha = fill(model.max_alpha, n_features)
+    model.active = falses(n_features)
+    model.coef = zeros(T, n_features)
+    @inbounds for p in 1:K
+        t = active_idx[p]
+        model.active[t] = true
+        model.coef[t] = mean_vec[p] / scales[t]
+        model.alpha[t] = alpha[p] / (scales[t] * scales[t])
+    end
+    model.beta = beta
 
-        try
-            model.sigma = inv(Σ_inv)
-        catch
-            model.sigma = Diagonal(@. inv(model.beta * diag(XXa) + alpha_a))
+    if K > 0
+        sigma = Matrix{T}(undef, K, K)
+        @inbounds for cj in 1:K, ri in 1:K
+            sigma[ri, cj] = ws.Cov[ri, cj] / (scales[active_idx[ri]] * scales[active_idx[cj]])
         end
+        # store sigma ordered to match findall(active) (ascending term index)
+        perm = sortperm(active_idx)
+        model.sigma = sigma[perm, perm]
     else
         model.sigma = Matrix{T}(undef, 0, 0)
     end
 
+    model.verbose && println("Finished after $iters_run iterations; active = $K")
     return model
 end
 
+"""
+    _post_update!(ws, active_idx, alpha, beta, K)
+
+After a rank-1 structural/precision change, refresh the excluded-basis factors
+and the cached `betaproj = β·cross`.
+"""
+@muladd function _post_update!(
+        ws::ARDWorkspace, active_idx::AbstractVector{Int},
+        alpha::AbstractVector{T}, beta::T, K::Int
+    ) where {T <: Real}
+    _refresh_out_factors!(ws, active_idx, alpha, K)
+    @views @. ws.betaproj[:, 1:K] = beta * ws.cross[:, 1:K]
+    return nothing
+end
+
 # ============================================================================
-# Prediction Functions (not type-stable due to dynamic arrays)
+# Multi-output convenience: fit one independent model per column of Y
+# ============================================================================
+
+@muladd function fit!(
+        model::FastARDRegressor{T},
+        X::AbstractMatrix{T},
+        Y::AbstractMatrix{T}
+    ) where {T <: Real}
+    n_outputs = size(Y, 2)
+    models = Vector{typeof(model)}(undef, n_outputs)
+    for i in 1:n_outputs
+        model.verbose && println("Fitting output $i/$n_outputs")
+        models[i] = fit!(deepcopy(model), X, view(Y, :, i))
+    end
+    return models
+end
+
+# ============================================================================
+# Prediction Functions
 # ============================================================================
 
 @muladd function predict(model::FastARDRegressor{T}, X::AbstractMatrix{T}) where {T <: Real}
     active_idx = findall(model.active)
     isempty(active_idx) && return fill(model.y_mean, size(X, 1))
 
-    # Apply same preprocessing as during training
     X_processed = if model.standardize
         (X .- model.X_mean) ./ model.X_std
     else
-        X  # Use raw data as-is
+        X
     end
     X_active = view(X_processed, :, active_idx)
     coef_active = view(model.coef, active_idx)
-
-    # Add back the y_mean to get predictions on original scale
     return X_active * coef_active .+ model.y_mean
 end
 
@@ -494,28 +794,23 @@ end
         return y_pred, y_std
     end
 
-    # Apply same preprocessing as during training
     X_processed = if model.standardize
         (X .- model.X_mean) ./ model.X_std
     else
-        X  # Use raw data as-is
+        X
     end
     X_active = view(X_processed, :, active_idx)
     coef_active = view(model.coef, active_idx)
 
-    # Predictions on processed scale, then add back y_mean
-    y_pred_processed = X_active * coef_active
-    y_pred = y_pred_processed .+ model.y_mean
+    y_pred = X_active * coef_active .+ model.y_mean
 
-    # Predictive variance (uncertainty doesn't change with centering/scaling)
     var_noise = inv(model.beta)
-    var_param = zeros(T, n_test)
-
+    # var_param = rowwise xᵀ Σ x   (batched: sum((Xa·Σ) .* Xa, dims=2))
     if !isempty(model.sigma)
-        @inbounds for i in 1:n_test
-            x_i = view(X_active, i, :)
-            var_param[i] = dot(x_i, model.sigma * x_i)
-        end
+        XΣ = X_active * model.sigma
+        var_param = vec(sum(XΣ .* X_active, dims = 2))
+    else
+        var_param = zeros(T, n_test)
     end
 
     y_std = @. safe_sqrt(var_noise + var_param)
@@ -527,52 +822,9 @@ function get_active_coefficients(model::FastARDRegressor)
     return active_idx, view(model.coef, active_idx)
 end
 
-# ============================================================================
-# Log Marginal Likelihood
-# ============================================================================
-
-@muladd function compute_log_marginal_likelihood(
-        X_active::AbstractMatrix{T},
-        y::AbstractVector{T},
-        alpha_active::AbstractVector{T},
-        beta::T, μ_active::AbstractVector{T},
-        Σ_diag::AbstractVector{T}
-    ) where {T <: Real}
-    n_samples = length(y)
-    n_active = length(alpha_active)
-
-    n_active == 0 && return -T(Inf)
-
-    # Residual sum of squares
-    residual = y - X_active * μ_active
-    rss = dot(residual, residual)
-
-    # Log determinant of posterior precision
-    Σ_inv = beta * (X_active' * X_active) + Diagonal(alpha_active)
-
-    log_det = try
-        L = cholesky(Σ_inv).L
-        2 * sum(log, diag(L))
-    catch
-        # Fallback using eigenvalues
-        eigenvals = eigvals(Symmetric(Matrix(Σ_inv)))
-        sum(log, max.(eigenvals, eps(T)))
-    end
-
-    # Log marginal likelihood
-    log_ml = -T(0.5) * (
-        n_samples * log(2π) -
-            n_samples * log(max(beta, eps(T))) +
-            sum(log, max.(alpha_active, eps(T))) - log_det +
-            beta * rss + dot(μ_active, alpha_active .* μ_active)
-    )
-
-    return isfinite(log_ml) ? log_ml : -T(Inf)
-end
-
 
 function __init__()
-    # Enable high-precision transcendental functions for MultiFloat types -- needed for log(MultiFloat)
+    # High-precision transcendental functions for MultiFloat (needed for log(MultiFloat))
     return MultiFloats.use_bigfloat_transcendentals()
 end
 
