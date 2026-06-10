@@ -11,7 +11,7 @@ println("Setting up documentation environment...")
 Pkg.activate("docs")
 
 # Add the current package in development mode
-Pkg.develop(PackageSpec(path="."))
+Pkg.develop(PackageSpec(path = "."))
 
 # Install/update dependencies
 Pkg.instantiate()

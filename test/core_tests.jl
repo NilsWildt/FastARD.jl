@@ -5,10 +5,12 @@
 @testitem "fit/predict on multicollinear data" begin
     using FastARD, Test, Statistics, LinearAlgebra
 
-    X = [0.1 -0.1 -0.2 0.02;
-         0.3 -0.3 -0.6 0.06;
-         0.4 -0.4 -0.8 0.08;
-         0.5 -0.5 -1.0 0.1]
+    X = [
+        0.1 -0.1 -0.2 0.02;
+        0.3 -0.3 -0.6 0.06;
+        0.4 -0.4 -0.8 0.08;
+        0.5 -0.5 -1.0 0.1
+    ]
     y = [2.0, 6.0, 8.0, 10.0]
 
     model = FastARD.FastARDRegressor(verbose = false)
@@ -25,10 +27,12 @@ end
 @testitem "predict_with_uncertainty" begin
     using FastARD, Test
 
-    X = [0.1 -0.1 -0.2 0.02;
-         0.3 -0.3 -0.6 0.06;
-         0.4 -0.4 -0.8 0.08;
-         0.5 -0.5 -1.0 0.1]
+    X = [
+        0.1 -0.1 -0.2 0.02;
+        0.3 -0.3 -0.6 0.06;
+        0.4 -0.4 -0.8 0.08;
+        0.5 -0.5 -1.0 0.1
+    ]
     y = [2.0, 6.0, 8.0, 10.0]
 
     model = FastARD.FastARDRegressor(verbose = false)

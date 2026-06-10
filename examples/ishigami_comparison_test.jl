@@ -37,7 +37,7 @@ Parameters:
 - a: controls the importance of x2 (default 7.0)  
 - b: controls the interaction between x1 and x3 (default 0.1)
 """
-function ishigami(x::AbstractVector; a=7.0, b=0.1)
+function ishigami(x::AbstractVector; a = 7.0, b = 0.1)
     x1, x2, x3 = x[1], x[2], x[3]
     return sin(x1) + a * sin(x2)^2 + b * x3^4 * sin(x1)
 end
@@ -50,7 +50,7 @@ end
 # We can use it directly: aPCE, UQ, train!, predict, etc.
 
 # ============================================================================
-# Polynomial Basis Generation 
+# Polynomial Basis Generation
 # ============================================================================
 
 """
@@ -59,50 +59,50 @@ Generate Legendre polynomials up to degree n for x ∈ [-1,1]
 function legendre_polynomials(x, max_degree)
     n = length(x)
     polys = zeros(n, max_degree + 1)
-    
+
     # P0(x) = 1
     polys[:, 1] .= 1.0
-    
+
     if max_degree >= 1
-        # P1(x) = x  
+        # P1(x) = x
         polys[:, 2] = x
     end
-    
+
     # Recurrence: (n+1)P_{n+1} = (2n+1)xP_n - nP_{n-1}
     for i in 2:max_degree
-        polys[:, i+1] = ((2*i-1) * x .* polys[:, i] - (i-1) * polys[:, i-1]) / i
+        polys[:, i + 1] = ((2 * i - 1) * x .* polys[:, i] - (i - 1) * polys[:, i - 1]) / i
     end
-    
+
     return polys
 end
 
 """
 Generate multivariate polynomial basis for 3D input
 """
-function generate_pce_basis(X, max_degree=3)
+function generate_pce_basis(X, max_degree = 3)
     n_samples, n_dims = size(X)
     @assert n_dims == 3 "Expected 3D input for Ishigami function"
-    
+
     # Transform to [-1,1] from [-π,π]
     X_normalized = X / π
-    
+
     # Generate univariate polynomials for each dimension
     polys = [legendre_polynomials(X_normalized[:, i], max_degree) for i in 1:n_dims]
-    
+
     # Multivariate basis using tensor products
     basis_terms = []
-    
+
     for i in 0:max_degree
         for j in 0:max_degree
             for k in 0:max_degree
                 if i + j + k <= max_degree
-                    term = polys[1][:, i+1] .* polys[2][:, j+1] .* polys[3][:, k+1]
+                    term = polys[1][:, i + 1] .* polys[2][:, j + 1] .* polys[3][:, k + 1]
                     push!(basis_terms, term)
                 end
             end
         end
     end
-    
+
     return hcat(basis_terms...)
 end
 
@@ -113,7 +113,7 @@ end
 """
 Weighted Least Squares - useful when measurement errors vary
 """
-@muladd function solve_weighted_least_squares(Psi, y; weights=nothing)
+@muladd function solve_weighted_least_squares(Psi, y; weights = nothing)
     if weights === nothing
         weights = ones(length(y))
     end
@@ -130,104 +130,104 @@ Total Least Squares - accounts for errors in both Psi and y
     augmented = [Psi y]
     U, σ, V = svd(augmented)
     solution = V[:, end]
-    return -solution[1:end-1] / solution[end]
+    return -solution[1:(end - 1)] / solution[end]
 end
 
 """
 Orthogonal Matching Pursuit - sparse solution
 """
-@muladd function solve_orthogonal_matching_pursuit(Psi, y; sparsity=10)
+@muladd function solve_orthogonal_matching_pursuit(Psi, y; sparsity = 10)
     n = size(Psi, 2)
     x = zeros(eltype(Psi), n)
     residual = copy(y)
     selected_indices = Int[]
-    
+
     for k in 1:min(sparsity, n)
         correlations = abs.(Psi' * residual)
         _, best_idx = findmax(correlations)
-        
+
         if best_idx ∉ selected_indices
             push!(selected_indices, best_idx)
         end
-        
+
         Psi_selected = Psi[:, selected_indices]
         x_selected = Psi_selected \ y
-        
+
         x[selected_indices] = x_selected
         residual = y - Psi * x
-        
-        if norm(residual) < 1e-10
+
+        if norm(residual) < 1.0e-10
             break
         end
     end
-    
+
     return x
 end
 
 """
 Elastic Net regularization (Ridge + Lasso)
 """
-@muladd function solve_elastic_net(Psi, y; α=0.01, l1_ratio=0.5, max_iter=1000)
+@muladd function solve_elastic_net(Psi, y; α = 0.01, l1_ratio = 0.5, max_iter = 1000)
     n = size(Psi, 2)
     x = zeros(eltype(Psi), n)
     λ1 = α * l1_ratio
     λ2 = α * (1 - l1_ratio)
-    
+
     for iter in 1:max_iter
         x_old = copy(x)
-        
+
         for j in 1:n
             r_j = y - Psi * x + Psi[:, j] * x[j]
-            
+
             numerator = dot(Psi[:, j], r_j)
             denominator = dot(Psi[:, j], Psi[:, j]) + λ2
-            
+
             if abs(numerator) <= λ1
                 x[j] = 0
             else
                 x[j] = sign(numerator) * (abs(numerator) - λ1) / denominator
             end
         end
-        
-        if norm(x - x_old) < 1e-8
+
+        if norm(x - x_old) < 1.0e-8
             break
         end
     end
-    
+
     return x
 end
 
 """
 Levenberg-Marquardt with adaptive regularization
 """
-@muladd function solve_levenberg_marquardt(Psi, y; λ_init=1e-3, max_iter=50)
+@muladd function solve_levenberg_marquardt(Psi, y; λ_init = 1.0e-3, max_iter = 50)
     x = pinv(Psi) * y
     λ = λ_init
-    
+
     for iter in 1:max_iter
         residual = Psi * x - y
         J = Psi
-        
+
         JtJ = J' * J
         Jtr = J' * residual
-        
+
         δx = -(JtJ + λ * I) \ Jtr
         x_new = x + δx
-        
+
         new_residual = Psi * x_new - y
-        
+
         if norm(new_residual) < norm(residual)
             x = x_new
             λ *= 0.3
         else
             λ *= 2.0
         end
-        
-        if norm(δx) < 1e-15
+
+        if norm(δx) < 1.0e-15
             break
         end
     end
-    
+
     return x
 end
 
@@ -236,31 +236,31 @@ SVD with adaptive truncation strategies
 """
 @muladd function solve_truncated_svd_adaptive(Psi, y)
     U, σ, V = svd(Psi)
-    
+
     # Multiple truncation strategies
     strategies = [
         ("machine_precision", eps() * maximum(σ)),
-        ("condition_1e12", maximum(σ) / 1e12),
-        ("energy_99", find_energy_threshold(σ, 0.99))
+        ("condition_1e12", maximum(σ) / 1.0e12),
+        ("energy_99", find_energy_threshold(σ, 0.99)),
     ]
-    
+
     best_residual = Inf
     best_x = nothing
-    
+
     for (name, threshold) in strategies
         valid_idx = σ .> threshold
         σ_inv = zeros(length(σ))
         σ_inv[valid_idx] .= 1 ./ σ[valid_idx]
-        
+
         x_candidate = V * (σ_inv .* (U' * y))
         residual = norm(Psi * x_candidate - y)
-        
+
         if residual < best_residual
             best_residual = residual
             best_x = x_candidate
         end
     end
-    
+
     return best_x
 end
 
@@ -277,7 +277,7 @@ end
 """
 Ridge regression with direct implementation
 """
-@muladd function solve_ridge_direct(Psi, y; λ=1e-6)
+@muladd function solve_ridge_direct(Psi, y; λ = 1.0e-6)
     n = size(Psi, 2)
     AtA = Psi' * Psi
     AtA[diagind(AtA)] .+= λ
@@ -306,7 +306,7 @@ noise_std = 0.5
 y_train_noisy = y_train + noise_std * randn(n_train)
 
 println("Training samples: $n_train")
-println("Test samples: $n_test") 
+println("Test samples: $n_test")
 println("Noise std: $noise_std")
 println("Signal-to-noise ratio: $(std(y_train) / noise_std)")
 println()
@@ -333,7 +333,7 @@ println("-"^30)
 
 # Time FastARD training and prediction
 @timeit TO "FastARD" begin
-    model_ard = FastARDRegressor(verbose=true, compute_score=true, n_iter=200)
+    model_ard = FastARDRegressor(verbose = true, compute_score = true, n_iter = 200)
     @timeit TO "FastARD Training" fit!(model_ard, Psi_train, y_train_noisy)
 
     # Get active coefficients
@@ -349,7 +349,7 @@ println("Selected $(length(active_indices)) basis functions out of $n_basis")
 println("Active indices: $active_indices")
 
 # Metrics
-rmse_ard = sqrt(mean((y_pred_ard .- y_test_true).^2))
+rmse_ard = sqrt(mean((y_pred_ard .- y_test_true) .^ 2))
 mae_ard = mean(abs.(y_pred_ard .- y_test_true))
 
 println("FastARD Test RMSE: $rmse_ard")
@@ -383,7 +383,7 @@ residual_var = var(residuals_train)
 y_std_pinv = sqrt(residual_var) * ones(n_test)
 
 # Metrics
-rmse_pinv = sqrt(mean((y_pred_pinv .- y_test_true).^2))
+rmse_pinv = sqrt(mean((y_pred_pinv .- y_test_true) .^ 2))
 mae_pinv = mean(abs.(y_pred_pinv .- y_test_true))
 
 println("All $n_basis basis functions used")
@@ -408,13 +408,13 @@ try
         # Give higher weights to samples with lower noise estimate
         weights = 1 ./ (abs.(y_train_noisy) .+ 0.1)
         @timeit TO "Weighted LS Training" begin
-            coef_wls = solve_weighted_least_squares(Psi_train, y_train_noisy; weights=weights)
+            coef_wls = solve_weighted_least_squares(Psi_train, y_train_noisy; weights = weights)
         end
         @timeit TO "Weighted LS Prediction" begin
             y_pred_wls = Psi_test * coef_wls
         end
-        rmse_wls = sqrt(mean((y_pred_wls .- y_test_true).^2))
-        methods_results["Weighted LS"] = (coef=coef_wls, pred=y_pred_wls, rmse=rmse_wls, sparsity=length(coef_wls))
+        rmse_wls = sqrt(mean((y_pred_wls .- y_test_true) .^ 2))
+        methods_results["Weighted LS"] = (coef = coef_wls, pred = y_pred_wls, rmse = rmse_wls, sparsity = length(coef_wls))
         println("Weighted LS RMSE: $rmse_wls")
     end
 catch e
@@ -430,8 +430,8 @@ try
         @timeit TO "Total LS Prediction" begin
             y_pred_tls = Psi_test * coef_tls
         end
-        rmse_tls = sqrt(mean((y_pred_tls .- y_test_true).^2))
-        methods_results["Total LS"] = (coef=coef_tls, pred=y_pred_tls, rmse=rmse_tls, sparsity=length(coef_tls))
+        rmse_tls = sqrt(mean((y_pred_tls .- y_test_true) .^ 2))
+        methods_results["Total LS"] = (coef = coef_tls, pred = y_pred_tls, rmse = rmse_tls, sparsity = length(coef_tls))
         println("Total LS RMSE: $rmse_tls")
     end
 catch e
@@ -443,14 +443,14 @@ try
     @timeit TO "OMP" begin
         target_sparsity = length(active_indices) + 5  # Slightly more than FastARD found
         @timeit TO "OMP Training" begin
-            coef_omp = solve_orthogonal_matching_pursuit(Psi_train, y_train_noisy; sparsity=target_sparsity)
+            coef_omp = solve_orthogonal_matching_pursuit(Psi_train, y_train_noisy; sparsity = target_sparsity)
         end
         @timeit TO "OMP Prediction" begin
             y_pred_omp = Psi_test * coef_omp
         end
-        rmse_omp = sqrt(mean((y_pred_omp .- y_test_true).^2))
-        omp_sparsity = sum(abs.(coef_omp) .> 1e-10)
-        methods_results["OMP"] = (coef=coef_omp, pred=y_pred_omp, rmse=rmse_omp, sparsity=omp_sparsity)
+        rmse_omp = sqrt(mean((y_pred_omp .- y_test_true) .^ 2))
+        omp_sparsity = sum(abs.(coef_omp) .> 1.0e-10)
+        methods_results["OMP"] = (coef = coef_omp, pred = y_pred_omp, rmse = rmse_omp, sparsity = omp_sparsity)
         println("OMP RMSE: $rmse_omp (sparsity: $omp_sparsity)")
     end
 catch e
@@ -461,14 +461,14 @@ end
 try
     @timeit TO "Elastic Net" begin
         @timeit TO "Elastic Net Training" begin
-            coef_enet = solve_elastic_net(Psi_train, y_train_noisy; α=0.1, l1_ratio=0.7)
+            coef_enet = solve_elastic_net(Psi_train, y_train_noisy; α = 0.1, l1_ratio = 0.7)
         end
         @timeit TO "Elastic Net Prediction" begin
             y_pred_enet = Psi_test * coef_enet
         end
-        rmse_enet = sqrt(mean((y_pred_enet .- y_test_true).^2))
-        enet_sparsity = sum(abs.(coef_enet) .> 1e-10)
-        methods_results["Elastic Net"] = (coef=coef_enet, pred=y_pred_enet, rmse=rmse_enet, sparsity=enet_sparsity)
+        rmse_enet = sqrt(mean((y_pred_enet .- y_test_true) .^ 2))
+        enet_sparsity = sum(abs.(coef_enet) .> 1.0e-10)
+        methods_results["Elastic Net"] = (coef = coef_enet, pred = y_pred_enet, rmse = rmse_enet, sparsity = enet_sparsity)
         println("Elastic Net RMSE: $rmse_enet (sparsity: $enet_sparsity)")
     end
 catch e
@@ -484,8 +484,8 @@ try
         @timeit TO "L-M Prediction" begin
             y_pred_lm = Psi_test * coef_lm
         end
-        rmse_lm = sqrt(mean((y_pred_lm .- y_test_true).^2))
-        methods_results["L-M"] = (coef=coef_lm, pred=y_pred_lm, rmse=rmse_lm, sparsity=length(coef_lm))
+        rmse_lm = sqrt(mean((y_pred_lm .- y_test_true) .^ 2))
+        methods_results["L-M"] = (coef = coef_lm, pred = y_pred_lm, rmse = rmse_lm, sparsity = length(coef_lm))
         println("Levenberg-Marquardt RMSE: $rmse_lm")
     end
 catch e
@@ -501,8 +501,8 @@ try
         @timeit TO "Adaptive SVD Prediction" begin
             y_pred_asvd = Psi_test * coef_asvd
         end
-        rmse_asvd = sqrt(mean((y_pred_asvd .- y_test_true).^2))
-        methods_results["Adaptive SVD"] = (coef=coef_asvd, pred=y_pred_asvd, rmse=rmse_asvd, sparsity=length(coef_asvd))
+        rmse_asvd = sqrt(mean((y_pred_asvd .- y_test_true) .^ 2))
+        methods_results["Adaptive SVD"] = (coef = coef_asvd, pred = y_pred_asvd, rmse = rmse_asvd, sparsity = length(coef_asvd))
         println("Adaptive SVD RMSE: $rmse_asvd")
     end
 catch e
@@ -513,13 +513,13 @@ end
 try
     @timeit TO "Ridge" begin
         @timeit TO "Ridge Training" begin
-            coef_ridge = solve_ridge_direct(Psi_train, y_train_noisy; λ=0.1)
+            coef_ridge = solve_ridge_direct(Psi_train, y_train_noisy; λ = 0.1)
         end
         @timeit TO "Ridge Prediction" begin
             y_pred_ridge = Psi_test * coef_ridge
         end
-        rmse_ridge = sqrt(mean((y_pred_ridge .- y_test_true).^2))
-        methods_results["Ridge"] = (coef=coef_ridge, pred=y_pred_ridge, rmse=rmse_ridge, sparsity=length(coef_ridge))
+        rmse_ridge = sqrt(mean((y_pred_ridge .- y_test_true) .^ 2))
+        methods_results["Ridge"] = (coef = coef_ridge, pred = y_pred_ridge, rmse = rmse_ridge, sparsity = length(coef_ridge))
         println("Ridge RMSE: $rmse_ridge")
     end
 catch e
@@ -540,8 +540,8 @@ println("PCE Statistical Analysis")
 println("-"^30)
 
 # --- aPCE (data-driven basis) as standalone method ---
-apc_native = aPCE(X_train, max_degree; outdim=1)
-train!(apc_native, X_train, y_train_noisy; bayesian_inversion=false)
+apc_native = aPCE(X_train, max_degree; outdim = 1)
+train!(apc_native, X_train, y_train_noisy; bayesian_inversion = false)
 uq_native = UQ(apc_native)
 
 # --- Legendre PCE UQ with proper normalization ---
@@ -591,16 +591,16 @@ emp_mean = mean(y_test_true)
 emp_var = var(y_test_true)
 
 println("PCE Statistics (from coefficients):")
-println("aPCE (data-driven) - Mean: $(round(uq_native.OutputMean[1], digits=4)), Variance: $(round(uq_native.OutputVar[1], digits=4))")
-println("FastARD (Legendre) - Mean: $(round(uq_ard.OutputMean[1], digits=4)), Variance: $(round(uq_ard.OutputVar[1], digits=4))")
-println("Pinv (Legendre)    - Mean: $(round(uq_pinv.OutputMean[1], digits=4)), Variance: $(round(uq_pinv.OutputVar[1], digits=4))")
-println("True empirical     - Mean: $(round(emp_mean, digits=4)), Variance: $(round(emp_var, digits=4))")
+println("aPCE (data-driven) - Mean: $(round(uq_native.OutputMean[1], digits = 4)), Variance: $(round(uq_native.OutputVar[1], digits = 4))")
+println("FastARD (Legendre) - Mean: $(round(uq_ard.OutputMean[1], digits = 4)), Variance: $(round(uq_ard.OutputVar[1], digits = 4))")
+println("Pinv (Legendre)    - Mean: $(round(uq_pinv.OutputMean[1], digits = 4)), Variance: $(round(uq_pinv.OutputVar[1], digits = 4))")
+println("True empirical     - Mean: $(round(emp_mean, digits = 4)), Variance: $(round(emp_var, digits = 4))")
 
 println("\nPCE Uncertainty Bounds (±1σ):")
-println("aPCE (data-driven): $(round(uq_native.OutputMean[1], digits=4)) ± $(round(sqrt(uq_native.OutputVar[1]), digits=4))")
-println("FastARD (Legendre): $(round(uq_ard.OutputMean[1], digits=4)) ± $(round(sqrt(uq_ard.OutputVar[1]), digits=4))")
-println("Pinv (Legendre):    $(round(uq_pinv.OutputMean[1], digits=4)) ± $(round(sqrt(uq_pinv.OutputVar[1]), digits=4))")
-println("Empirical:          $(round(emp_mean, digits=4)) ± $(round(sqrt(emp_var), digits=4))")
+println("aPCE (data-driven): $(round(uq_native.OutputMean[1], digits = 4)) ± $(round(sqrt(uq_native.OutputVar[1]), digits = 4))")
+println("FastARD (Legendre): $(round(uq_ard.OutputMean[1], digits = 4)) ± $(round(sqrt(uq_ard.OutputVar[1]), digits = 4))")
+println("Pinv (Legendre):    $(round(uq_pinv.OutputMean[1], digits = 4)) ± $(round(sqrt(uq_pinv.OutputVar[1]), digits = 4))")
+println("Empirical:          $(round(emp_mean, digits = 4)) ± $(round(sqrt(emp_var), digits = 4))")
 println()
 
 # ============================================================================
@@ -615,18 +615,18 @@ residuals_ard = abs.(y_pred_ard .- y_test_true)
 within_1sigma_ard = sum(residuals_ard .<= y_std_ard) / n_test
 within_2sigma_ard = sum(residuals_ard .<= 2 .* y_std_ard) / n_test
 
-# Check Pinv uncertainty calibration  
+# Check Pinv uncertainty calibration
 residuals_pinv = abs.(y_pred_pinv .- y_test_true)
 within_1sigma_pinv = sum(residuals_pinv .<= y_std_pinv) / n_test
 within_2sigma_pinv = sum(residuals_pinv .<= 2 .* y_std_pinv) / n_test
 
 println("FastARD Calibration:")
-println("  Within 1σ: $(round(within_1sigma_ard, digits=3)) (should be ~0.68)")
-println("  Within 2σ: $(round(within_2sigma_ard, digits=3)) (should be ~0.95)")
+println("  Within 1σ: $(round(within_1sigma_ard, digits = 3)) (should be ~0.68)")
+println("  Within 2σ: $(round(within_2sigma_ard, digits = 3)) (should be ~0.95)")
 
-println("Pinv Calibration:")  
-println("  Within 1σ: $(round(within_1sigma_pinv, digits=3)) (should be ~0.68)")
-println("  Within 2σ: $(round(within_2sigma_pinv, digits=3)) (should be ~0.95)")
+println("Pinv Calibration:")
+println("  Within 1σ: $(round(within_1sigma_pinv, digits = 3)) (should be ~0.68)")
+println("  Within 2σ: $(round(within_2sigma_pinv, digits = 3)) (should be ~0.95)")
 println()
 
 # ============================================================================
@@ -643,23 +643,25 @@ compression_ratio = effective_rank_ard / effective_rank_pinv
 
 println("FastARD effective rank: $effective_rank_ard")
 println("Pinv effective rank: $effective_rank_pinv")
-println("Compression ratio: $(round(compression_ratio, digits=3))")
+println("Compression ratio: $(round(compression_ratio, digits = 3))")
 
 # Parameter magnitude analysis
 println("\nLargest coefficients:")
-sorted_indices = sortperm(abs.(coef_pinv), rev=true)[1:min(10, length(coef_pinv))]
+sorted_indices = sortperm(abs.(coef_pinv), rev = true)[1:min(10, length(coef_pinv))]
 for (i, idx) in enumerate(sorted_indices)
     is_selected = idx in active_indices
     marker = is_selected ? "✓" : " "
     # Get FastARD coefficient for this index
     ard_coef = if idx in active_indices
         active_idx_pos = findfirst(==(idx), active_indices)
-        round(active_coefs[active_idx_pos], digits=4)
+        round(active_coefs[active_idx_pos], digits = 4)
     else
         0.0
     end
-    println("  $marker Basis $idx: pinv=$(round(coef_pinv[idx], digits=4)), " *
-            "FastARD=$ard_coef")
+    println(
+        "  $marker Basis $idx: pinv=$(round(coef_pinv[idx], digits = 4)), " *
+            "FastARD=$ard_coef"
+    )
 end
 println()
 
@@ -670,65 +672,79 @@ println()
 println(" Creating Legendre polynomial visualization...")
 
 # Create figure for polynomial basis visualization
-fig_poly = Figure(size=(1200, 800), fontsize=12)
+fig_poly = Figure(size = (1200, 800), fontsize = 12)
 
 # Generate points for smooth polynomial visualization
-x_smooth = range(-1, 1, length=200)
+x_smooth = range(-1, 1, length = 200)
 max_degree_vis = 5
 
 # Plot univariate Legendre polynomials
-ax_poly = Axis(fig_poly[1, 1], 
-    title="Legendre Polynomials P₀(x) to P₅(x)", 
-    xlabel="x ∈ [-1, 1]", 
-    ylabel="Polynomial Value")
+ax_poly = Axis(
+    fig_poly[1, 1],
+    title = "Legendre Polynomials P₀(x) to P₅(x)",
+    xlabel = "x ∈ [-1, 1]",
+    ylabel = "Polynomial Value"
+)
 
 # Generate and plot polynomials
 polys_smooth = legendre_polynomials(x_smooth, max_degree_vis)
 colors_poly = [:blue, :red, :green, :orange, :purple, :brown]
 
-for i in 1:(max_degree_vis+1)
-    lines!(ax_poly, x_smooth, polys_smooth[:, i], 
-           color=colors_poly[i], linewidth=2, 
-           label="P$(i-1)(x)")
+for i in 1:(max_degree_vis + 1)
+    lines!(
+        ax_poly, x_smooth, polys_smooth[:, i],
+        color = colors_poly[i], linewidth = 2,
+        label = "P$(i - 1)(x)"
+    )
 end
 
-axislegend(ax_poly, position=:rt)
+axislegend(ax_poly, position = :rt)
 
 # Add grid for better readability
 ax_poly.xgridvisible = true
 ax_poly.ygridvisible = true
 
 # Plot multivariate basis function magnitudes
-ax_basis = Axis(fig_poly[1, 2], 
-    title="Multivariate Basis Function Magnitudes", 
-    xlabel="Basis Function Index", 
-    ylabel="Mean Absolute Value")
+ax_basis = Axis(
+    fig_poly[1, 2],
+    title = "Multivariate Basis Function Magnitudes",
+    xlabel = "Basis Function Index",
+    ylabel = "Mean Absolute Value"
+)
 
 # Calculate mean absolute values of basis functions
 basis_magnitudes = [mean(abs.(Psi_train[:, i])) for i in 1:size(Psi_train, 2)]
-barplot!(ax_basis, 1:length(basis_magnitudes), basis_magnitudes, 
-         color=:steelblue, alpha=0.7)
+barplot!(
+    ax_basis, 1:length(basis_magnitudes), basis_magnitudes,
+    color = :steelblue, alpha = 0.7
+)
 
 # Highlight active basis functions from FastARD
 if !isempty(active_indices)
-    scatter!(ax_basis, active_indices, basis_magnitudes[active_indices], 
-             color=:red, markersize=8, label="FastARD Active")
-    axislegend(ax_basis, position=:rt)
+    scatter!(
+        ax_basis, active_indices, basis_magnitudes[active_indices],
+        color = :red, markersize = 8, label = "FastARD Active"
+    )
+    axislegend(ax_basis, position = :rt)
 end
 
 # Orthogonality check visualization
-ax_ortho = Axis(fig_poly[2, 1:2], 
-    title="Basis Function Orthogonality Check (Gram Matrix)", 
-    xlabel="Basis Function Index", 
-    ylabel="Basis Function Index")
+ax_ortho = Axis(
+    fig_poly[2, 1:2],
+    title = "Basis Function Orthogonality Check (Gram Matrix)",
+    xlabel = "Basis Function Index",
+    ylabel = "Basis Function Index"
+)
 
 # Compute and visualize Gram matrix (should be near-diagonal for orthogonal functions)
 n_vis = min(20, size(Psi_train, 2))  # Visualize first 20 for clarity
 Psi_subset = Psi_train[:, 1:n_vis]
 gram_matrix = (Psi_subset' * Psi_subset) / size(Psi_train, 1)  # Normalized
 
-heatmap!(ax_ortho, 1:n_vis, 1:n_vis, gram_matrix, 
-         colormap=:RdBu, colorrange=(-0.5, 0.5))
+heatmap!(
+    ax_ortho, 1:n_vis, 1:n_vis, gram_matrix,
+    colormap = :RdBu, colorrange = (-0.5, 0.5)
+)
 
 save("examples/legendre_polynomials_analysis.pdf", fig_poly)
 println("Legendre polynomial analysis saved as 'legendre_polynomials_analysis.pdf'")
@@ -754,11 +770,11 @@ function get_timer_data(timer_name::String)
         else
             return (0.0, 0.0, 0.0)
         end
-        
+
         # Try to get training and prediction times
         training_time = 0.0
         prediction_time = 0.0
-        
+
         # Look for training timer in the main timer's inner_timers
         training_timer_name = timer_name * " Training"
         if haskey(timer_data.inner_timers, training_timer_name)
@@ -767,7 +783,7 @@ function get_timer_data(timer_name::String)
                 training_time = training_timer.accumulated_data.time
             end
         end
-        
+
         # Look for prediction timer in the main timer's inner_timers
         prediction_timer_name = timer_name * " Prediction"
         if haskey(timer_data.inner_timers, prediction_timer_name)
@@ -776,23 +792,25 @@ function get_timer_data(timer_name::String)
                 prediction_time = prediction_timer.accumulated_data.time
             end
         end
-        
+
         # Convert nanoseconds to milliseconds
-        return (training_time/1e6, prediction_time/1e6, total_time/1e6)
+        return (training_time / 1.0e6, prediction_time / 1.0e6, total_time / 1.0e6)
     catch e
         return (0.0, 0.0, 0.0)
     end
 end
 
 # Create timing breakdown figure
-fig_timing = Figure(size=(1000, 600), fontsize=12)
+fig_timing = Figure(size = (1000, 600), fontsize = 12)
 
 # Panel 1: Training vs Prediction Time Breakdown
-ax_breakdown = Axis(fig_timing[1, 1], 
-    title="Training vs Prediction Time Breakdown", 
-    xlabel="Method", 
-    ylabel="Time (ms)",
-    xticklabelrotation=π/4)
+ax_breakdown = Axis(
+    fig_timing[1, 1],
+    title = "Training vs Prediction Time Breakdown",
+    xlabel = "Method",
+    ylabel = "Time (ms)",
+    xticklabelrotation = π / 4
+)
 
 # Collect training and prediction times
 methods_with_timing = []
@@ -805,16 +823,16 @@ function get_detailed_timing(method_name::String)
         timer_data = TO[method_name]
         training_time = 0.0
         prediction_time = 0.0
-        
+
         # Get sub-timer data
         for (key, sub_timer) in timer_data.inner_timers
             if occursin("Training", key)
-                training_time = sub_timer.time / 1e6  # Convert to ms
+                training_time = sub_timer.time / 1.0e6  # Convert to ms
             elseif occursin("Prediction", key)
-                prediction_time = sub_timer.time / 1e6  # Convert to ms
+                prediction_time = sub_timer.time / 1.0e6  # Convert to ms
             end
         end
-        
+
         return training_time, prediction_time
     catch
         return 0.0, 0.0
@@ -849,24 +867,30 @@ end
 
 if !isempty(methods_with_timing)
     x_pos = 1:length(methods_with_timing)
-    
+
     # Create stacked bar chart
-    barplot!(ax_breakdown, x_pos, training_times, 
-             color=:steelblue, alpha=0.8, label="Training")
-    barplot!(ax_breakdown, x_pos, prediction_times, 
-             color=:coral, alpha=0.8, label="Prediction",
-             stack=training_times)
-    
+    barplot!(
+        ax_breakdown, x_pos, training_times,
+        color = :steelblue, alpha = 0.8, label = "Training"
+    )
+    barplot!(
+        ax_breakdown, x_pos, prediction_times,
+        color = :coral, alpha = 0.8, label = "Prediction",
+        stack = training_times
+    )
+
     ax_breakdown.xticks = (x_pos, methods_with_timing)
-    axislegend(ax_breakdown, position=:rt)
+    axislegend(ax_breakdown, position = :rt)
 end
 
 # Panel 2: Performance Efficiency (Accuracy per unit time)
-ax_efficiency = Axis(fig_timing[1, 2], 
-    title="Performance Efficiency (Lower is Better)", 
-    xlabel="Method", 
-    ylabel="RMSE × Time (lower = more efficient)",
-    xticklabelrotation=π/4)
+ax_efficiency = Axis(
+    fig_timing[1, 2],
+    title = "Performance Efficiency (Lower is Better)",
+    xlabel = "Method",
+    ylabel = "RMSE × Time (lower = more efficient)",
+    xticklabelrotation = π / 4
+)
 
 # Calculate efficiency metric (RMSE × Total Time)
 efficiency_methods = []
@@ -898,8 +922,10 @@ for (name, results) in methods_results
 end
 
 if !isempty(efficiency_scores)
-    barplot!(ax_efficiency, 1:length(efficiency_methods), efficiency_scores, 
-             color=:purple, alpha=0.7)
+    barplot!(
+        ax_efficiency, 1:length(efficiency_methods), efficiency_scores,
+        color = :purple, alpha = 0.7
+    )
     ax_efficiency.xticks = (1:length(efficiency_methods), efficiency_methods)
 end
 
@@ -913,22 +939,24 @@ println(" Timing analysis saved as 'timing_analysis.pdf'")
 println(" Creating comprehensive comparison visualization...")
 
 # Set up the figure with multiple panels
-fig = Figure(size=(1400, 1200), fontsize=12)
+fig = Figure(size = (1400, 1200), fontsize = 12)
 
 # Panel 1: True vs Predicted comparison
-ax1 = Axis(fig[1, 1], 
-    title="True vs Predicted Values", 
-    xlabel="True Values", 
-    ylabel="Predicted Values",
-    aspect=DataAspect())
+ax1 = Axis(
+    fig[1, 1],
+    title = "True vs Predicted Values",
+    xlabel = "True Values",
+    ylabel = "Predicted Values",
+    aspect = DataAspect()
+)
 
 # Plot diagonal line for perfect prediction
 min_val, max_val = extrema([y_test_true; y_pred_ard; y_pred_pinv])
-lines!(ax1, [min_val, max_val], [min_val, max_val], color=:gray, linestyle=:dash, linewidth=2, label="Perfect")
+lines!(ax1, [min_val, max_val], [min_val, max_val], color = :gray, linestyle = :dash, linewidth = 2, label = "Perfect")
 
 # Scatter plots for predictions
-scatter!(ax1, y_test_true, y_pred_ard, color=(:blue, 0.6), markersize=8, label="FastARD")
-scatter!(ax1, y_test_true, y_pred_pinv, color=(:red, 0.6), markersize=8, label="Pinv")
+scatter!(ax1, y_test_true, y_pred_ard, color = (:blue, 0.6), markersize = 8, label = "FastARD")
+scatter!(ax1, y_test_true, y_pred_pinv, color = (:red, 0.6), markersize = 8, label = "Pinv")
 
 # Add predictions from successful additional methods
 method_colors = [:green, :orange, :purple, :brown, :pink, :cyan, :yellow]
@@ -936,22 +964,26 @@ i_color = 1
 for (name, results) in methods_results
     global i_color
     if i_color <= length(method_colors)
-        scatter!(ax1, y_test_true, results.pred, 
-                color=(method_colors[i_color], 0.6), markersize=6, 
-                label=name)
+        scatter!(
+            ax1, y_test_true, results.pred,
+            color = (method_colors[i_color], 0.6), markersize = 6,
+            label = name
+        )
         i_color += 1
     end
 end
 
-axislegend(ax1, position=:lt)
+axislegend(ax1, position = :lt)
 
 # Panel 2: Timing comparison
-ax2 = Axis(fig[1, 2], 
-    title="Execution Time Comparison", 
-    xlabel="Method", 
-    ylabel="Time (ms, log scale)",
-    yscale=log10,
-    xticklabelrotation=π/4)
+ax2 = Axis(
+    fig[1, 2],
+    title = "Execution Time Comparison",
+    xlabel = "Method",
+    ylabel = "Time (ms, log scale)",
+    yscale = log10,
+    xticklabelrotation = π / 4
+)
 
 # Collect timing data for plotting
 timing_names = []
@@ -981,17 +1013,21 @@ for (name, results) in methods_results
 end
 
 if !isempty(timing_values)
-    barplot!(ax2, 1:length(timing_names), timing_values, 
-             color=:coral, alpha=0.7)
+    barplot!(
+        ax2, 1:length(timing_names), timing_values,
+        color = :coral, alpha = 0.7
+    )
     ax2.xticks = (1:length(timing_names), timing_names)
 end
 
 # Panel 3: Sparsity comparison
-ax3 = Axis(fig[2, 1], 
-    title="Sparsity Comparison", 
-    xlabel="Method", 
-    ylabel="Number of Active Features",
-    xticklabelrotation=π/4)
+ax3 = Axis(
+    fig[2, 1],
+    title = "Sparsity Comparison",
+    xlabel = "Method",
+    ylabel = "Number of Active Features",
+    xticklabelrotation = π / 4
+)
 
 # Collect sparsity data
 sparsity_names = ["FastARD", "Pinv"]
@@ -1002,34 +1038,40 @@ for (name, results) in methods_results
     push!(sparsity_values, results.sparsity)
 end
 
-barplot!(ax3, 1:length(sparsity_names), sparsity_values, 
-         color=:orange, alpha=0.7)
+barplot!(
+    ax3, 1:length(sparsity_names), sparsity_values,
+    color = :orange, alpha = 0.7
+)
 
 ax3.xticks = (1:length(sparsity_names), sparsity_names)
 
 # Add total features line
-hlines!(ax3, [n_basis], color=:red, linestyle=:dash, linewidth=2, label="Total Features")
-axislegend(ax3, position=:rt)
+hlines!(ax3, [n_basis], color = :red, linestyle = :dash, linewidth = 2, label = "Total Features")
+axislegend(ax3, position = :rt)
 
 # Panel 4: Best methods uncertainty visualization
-ax4 = Axis(fig[2, 2], 
-    title="Predictions with Uncertainty (Best Methods)", 
-    xlabel="Test Sample Index", 
-    ylabel="Output Value")
+ax4 = Axis(
+    fig[2, 2],
+    title = "Predictions with Uncertainty (Best Methods)",
+    xlabel = "Test Sample Index",
+    ylabel = "Output Value"
+)
 
 # Sort by true values for better visualization
 sort_idx = sortperm(y_test_true)
 x_plot = 1:length(y_test_true)
 
 # Plot true values
-lines!(ax4, x_plot, y_test_true[sort_idx], color=:black, linewidth=2, label="True")
+lines!(ax4, x_plot, y_test_true[sort_idx], color = :black, linewidth = 2, label = "True")
 
 # Plot FastARD predictions with uncertainty
-lines!(ax4, x_plot, y_pred_ard[sort_idx], color=:blue, linewidth=2, label="FastARD")
-band!(ax4, x_plot, 
-      (y_pred_ard[sort_idx] .- y_std_ard[sort_idx]), 
-      (y_pred_ard[sort_idx] .+ y_std_ard[sort_idx]), 
-      color=(:blue, 0.2), label="FastARD ±1σ")
+lines!(ax4, x_plot, y_pred_ard[sort_idx], color = :blue, linewidth = 2, label = "FastARD")
+band!(
+    ax4, x_plot,
+    (y_pred_ard[sort_idx] .- y_std_ard[sort_idx]),
+    (y_pred_ard[sort_idx] .+ y_std_ard[sort_idx]),
+    color = (:blue, 0.2), label = "FastARD ±1σ"
+)
 
 # Find and plot best additional method
 best_method_name = ""
@@ -1048,18 +1090,22 @@ if !isempty(methods_results)
             best_pred = results.pred
         end
     end
-    
+
     if best_pred !== nothing
-        lines!(ax4, x_plot, best_pred[sort_idx], color=:green, linewidth=2, 
-               label="$best_method_name (best)")
+        lines!(
+            ax4, x_plot, best_pred[sort_idx], color = :green, linewidth = 2,
+            label = "$best_method_name (best)"
+        )
     end
 end
 
-axislegend(ax4, position=:lt)
+axislegend(ax4, position = :lt)
 
 # Add overall title and metrics
-Label(fig[0, :], "FastARD vs Advanced Numerical Methods: Ishigami Function", 
-      fontsize=16, font="bold")
+Label(
+    fig[0, :], "FastARD vs Advanced Numerical Methods: Ishigami Function",
+    fontsize = 16, font = "bold"
+)
 
 # Add summary statistics as text with timing
 metrics_lines = []
@@ -1069,24 +1115,24 @@ fastard_training_metrics, fastard_prediction_metrics, fastard_total_metrics = ge
 pinv_training_metrics, pinv_prediction_metrics, pinv_total_metrics = get_timer_data("Pinv")
 
 # FastARD with timing
-fastard_time_str = fastard_total_metrics > 0 ? " ($(round(fastard_total_metrics, digits=1))ms)" : ""
-push!(metrics_lines, "FastARD: RMSE=$(round(rmse_ard, digits=4)), $(effective_rank_ard)/$n_basis features$fastard_time_str")
+fastard_time_str = fastard_total_metrics > 0 ? " ($(round(fastard_total_metrics, digits = 1))ms)" : ""
+push!(metrics_lines, "FastARD: RMSE=$(round(rmse_ard, digits = 4)), $(effective_rank_ard)/$n_basis features$fastard_time_str")
 
-# Pinv with timing  
-pinv_time_str = pinv_total_metrics > 0 ? " ($(round(pinv_total_metrics, digits=1))ms)" : ""
-push!(metrics_lines, "Pinv: RMSE=$(round(rmse_pinv, digits=4)), $effective_rank_pinv/$n_basis features$pinv_time_str")
+# Pinv with timing
+pinv_time_str = pinv_total_metrics > 0 ? " ($(round(pinv_total_metrics, digits = 1))ms)" : ""
+push!(metrics_lines, "Pinv: RMSE=$(round(rmse_pinv, digits = 4)), $effective_rank_pinv/$n_basis features$pinv_time_str")
 
 for (name, results) in methods_results
     sparsity_info = results.sparsity == length(results.coef) ? "all" : "$(results.sparsity)"
     training_time, prediction_time, total_time = get_timer_data(name)
-    time_str = total_time > 0 ? " ($(round(total_time, digits=1))ms)" : ""
-    push!(metrics_lines, "$name: RMSE=$(round(results.rmse, digits=4)), $sparsity_info/$n_basis features$time_str")
+    time_str = total_time > 0 ? " ($(round(total_time, digits = 1))ms)" : ""
+    push!(metrics_lines, "$name: RMSE=$(round(results.rmse, digits = 4)), $sparsity_info/$n_basis features$time_str")
 end
 
-push!(metrics_lines, "Compression: $(round(compression_ratio*100, digits=1))% of features retained (FastARD)")
+push!(metrics_lines, "Compression: $(round(compression_ratio * 100, digits = 1))% of features retained (FastARD)")
 
 metrics_text = join(metrics_lines, "\n")
-Label(fig[3, :], metrics_text, fontsize=10, tellwidth=false)
+Label(fig[3, :], metrics_text, fontsize = 10, tellwidth = false)
 
 # Save the plot
 save("examples/ishigami_comparison_results.pdf", fig)
@@ -1094,15 +1140,19 @@ println(" Visualization saved as 'ishigami_comparison_results.pdf'")
 
 # Display convergence if scores available
 if !isempty(model_ard.scores) && length(model_ard.scores) > 1
-    fig_conv = Figure(size=(600, 400))
-    ax_conv = Axis(fig_conv[1, 1], 
-        title="FastARD Convergence", 
-        xlabel="Iteration", 
-        ylabel="Log Marginal Likelihood")
-    
-    scatterlines!(ax_conv, 1:length(model_ard.scores), model_ard.scores, 
-                  color=:blue, linewidth=2, markersize=6)
-    
+    fig_conv = Figure(size = (600, 400))
+    ax_conv = Axis(
+        fig_conv[1, 1],
+        title = "FastARD Convergence",
+        xlabel = "Iteration",
+        ylabel = "Log Marginal Likelihood"
+    )
+
+    scatterlines!(
+        ax_conv, 1:length(model_ard.scores), model_ard.scores,
+        color = :blue, linewidth = 2, markersize = 6
+    )
+
     save("examples/ishigami_convergence.pdf", fig_conv)
     println(" Convergence plot saved as 'ishigami_convergence.pdf'")
 end
@@ -1117,14 +1167,14 @@ println(" COMPREHENSIVE SUMMARY")
 println("="^90)
 println("Method           | RMSE      | MAE       | Uncertainty | PCE Var    | Sparsity")
 println("-"^90)
-println("FastARD          | $(round(rmse_ard, digits=4))    | $(round(mae_ard, digits=4))    | $(round(mean(y_std_ard), digits=4))      | $(round(uq_ard.OutputVar[1], digits=4))      | $(effective_rank_ard)/$n_basis")
-println("Pinv             | $(round(rmse_pinv, digits=4))    | $(round(mae_pinv, digits=4))    | $(round(mean(y_std_pinv), digits=4))      | $(round(uq_pinv.OutputVar[1], digits=4))      | $effective_rank_pinv/$n_basis")
+println("FastARD          | $(round(rmse_ard, digits = 4))    | $(round(mae_ard, digits = 4))    | $(round(mean(y_std_ard), digits = 4))      | $(round(uq_ard.OutputVar[1], digits = 4))      | $(effective_rank_ard)/$n_basis")
+println("Pinv             | $(round(rmse_pinv, digits = 4))    | $(round(mae_pinv, digits = 4))    | $(round(mean(y_std_pinv), digits = 4))      | $(round(uq_pinv.OutputVar[1], digits = 4))      | $effective_rank_pinv/$n_basis")
 
 # Add results from additional methods
 for (name, results) in methods_results
     method_name_padded = rpad(name, 16)
     sparsity_str = results.sparsity == length(results.coef) ? "all" : "$(results.sparsity)"
-    println("$method_name_padded | $(round(results.rmse, digits=4))    | N/A       | N/A         | N/A        | $sparsity_str/$n_basis")
+    println("$method_name_padded | $(round(results.rmse, digits = 4))    | N/A       | N/A         | N/A        | $sparsity_str/$n_basis")
 end
 println()
 
@@ -1136,10 +1186,10 @@ end
 
 best_method, best_overall_rmse = all_methods[argmin([rmse for (_, rmse) in all_methods])]
 
-println(" BEST OVERALL METHOD: $best_method (RMSE: $(round(best_overall_rmse, digits=4)))")
+println(" BEST OVERALL METHOD: $best_method (RMSE: $(round(best_overall_rmse, digits = 4)))")
 
 if best_method == "FastARD"
-    println("   FastARD achieved best accuracy with $(round((1-compression_ratio)*100, digits=1))% fewer parameters!")
+    println("   FastARD achieved best accuracy with $(round((1 - compression_ratio) * 100, digits = 1))% fewer parameters!")
 elseif best_method == "Pinv"
     println("   Pinv achieved best accuracy but used all parameters")
 else
@@ -1147,7 +1197,7 @@ else
     if haskey(methods_results, best_method)
         best_sparsity = methods_results[best_method].sparsity
         sparsity_ratio = best_sparsity / n_basis
-        println("   $best_method achieved best accuracy using $(round(sparsity_ratio*100, digits=1))% of available features")
+        println("   $best_method achieved best accuracy using $(round(sparsity_ratio * 100, digits = 1))% of available features")
     end
 end
 
@@ -1163,7 +1213,7 @@ end
 if length(sparse_methods) > 1
     println("   Sparse methods found:")
     for (name, sparsity) in sparse_methods
-        println("     - $name: $sparsity/$n_basis features ($(round(sparsity/n_basis*100, digits=1))%)")
+        println("     - $name: $sparsity/$n_basis features ($(round(sparsity / n_basis * 100, digits = 1))%)")
     end
 else
     println("   Only FastARD achieved meaningful sparsity")
@@ -1177,7 +1227,7 @@ println("\n PERFORMANCE ANALYSIS")
 println("="^90)
 
 # Display the full timer output
-show(TO; allocations=false, compact=false)
+show(TO; allocations = false, compact = false)
 println()
 
 # Create a comprehensive timing and performance table
@@ -1207,7 +1257,7 @@ end
 valid_timing_data = filter(x -> x[5] > 0, performance_data)
 invalid_timing_data = filter(x -> x[5] <= 0, performance_data)
 
-sorted_by_speed_valid = sort(valid_timing_data, by=x->x[5])  # Sort by total time
+sorted_by_speed_valid = sort(valid_timing_data, by = x -> x[5])  # Sort by total time
 sorted_by_speed = vcat(sorted_by_speed_valid, invalid_timing_data)
 
 speed_ranks = Dict{String, Int}()
@@ -1216,15 +1266,15 @@ for (i, (method_name, _, _, _, _, _)) in enumerate(sorted_by_speed)
 end
 
 # Print the table sorted by RMSE (best accuracy first)
-sorted_by_rmse = sort(performance_data, by=x->x[2])
+sorted_by_rmse = sort(performance_data, by = x -> x[2])
 
 for (method_name, rmse, training_ms, prediction_ms, total_ms, sparsity) in sorted_by_rmse
     speed_rank = speed_ranks[method_name]
-    
+
     # Format strings
     rmse_str = @sprintf("%.6f", rmse)
     training_str = training_ms > 0 ? @sprintf("%.2f ms", training_ms) : "N/A"
-    prediction_str = prediction_ms > 0 ? @sprintf("%.2f ms", prediction_ms) : "N/A" 
+    prediction_str = prediction_ms > 0 ? @sprintf("%.2f ms", prediction_ms) : "N/A"
     total_str = total_ms > 0 ? @sprintf("%.2f ms", total_ms) : "N/A"
     sparsity_str = "$sparsity/$n_basis"
     println(@sprintf("%-16s | %-8s | %-10s | %-10s | %-10s | %-8s | %-12s", method_name, rmse_str, training_str, prediction_str, total_str, sparsity_str, "#$speed_rank"))
@@ -1236,11 +1286,11 @@ println()
 println(" PERFORMANCE INSIGHTS:")
 fastest_method = sorted_by_speed[1][1]
 fastest_time = sorted_by_speed[1][5]
-println("   Fastest Method: $fastest_method ($(round(fastest_time, digits=2)) ms)")
+println("   Fastest Method: $fastest_method ($(round(fastest_time, digits = 2)) ms)")
 
 most_accurate = sorted_by_rmse[1][1]
 most_accurate_rmse = sorted_by_rmse[1][2]
-println("   Most Accurate: $most_accurate (RMSE: $(round(most_accurate_rmse, digits=6)))")
+println("   Most Accurate: $most_accurate (RMSE: $(round(most_accurate_rmse, digits = 6)))")
 
 # FastARD analysis
 fastard_speed_rank = speed_ranks["FastARD"]
@@ -1272,83 +1322,103 @@ println("\nPerformance analysis completed successfully!")
 println("\n Creating uncertainty bands comparison plot...")
 
 # Create figure for uncertainty bands comparison
-fig_uncertainty = Figure(size=(1400, 800), fontsize=12)
+fig_uncertainty = Figure(size = (1400, 800), fontsize = 12)
 
 # Panel 1: FastARD uncertainty analysis
-ax_unc1 = Axis(fig_uncertainty[1, 1], 
-    title="FastARD Predictions with Uncertainty Bands", 
-    xlabel="Test Sample Index", 
-    ylabel="Output Value")
+ax_unc1 = Axis(
+    fig_uncertainty[1, 1],
+    title = "FastARD Predictions with Uncertainty Bands",
+    xlabel = "Test Sample Index",
+    ylabel = "Output Value"
+)
 
 # Sort by true values for better visualization
 sort_idx = sortperm(y_test_true)
 x_plot = 1:length(y_test_true)
 
 # Plot true values
-lines!(ax_unc1, x_plot, y_test_true[sort_idx], color=:black, linewidth=3, label="True Values")
+lines!(ax_unc1, x_plot, y_test_true[sort_idx], color = :black, linewidth = 3, label = "True Values")
 
 # Plot FastARD predictions with multiple uncertainty levels
-lines!(ax_unc1, x_plot, y_pred_ard[sort_idx], color=:blue, linewidth=2, label="FastARD Prediction")
+lines!(ax_unc1, x_plot, y_pred_ard[sort_idx], color = :blue, linewidth = 2, label = "FastARD Prediction")
 
 # Add multiple uncertainty bands
-band!(ax_unc1, x_plot, 
-      (y_pred_ard[sort_idx] .- y_std_ard[sort_idx]), 
-      (y_pred_ard[sort_idx] .+ y_std_ard[sort_idx]), 
-      color=(:blue, 0.3), label="±1σ (68% confidence)")
+band!(
+    ax_unc1, x_plot,
+    (y_pred_ard[sort_idx] .- y_std_ard[sort_idx]),
+    (y_pred_ard[sort_idx] .+ y_std_ard[sort_idx]),
+    color = (:blue, 0.3), label = "±1σ (68% confidence)"
+)
 
-band!(ax_unc1, x_plot, 
-      (y_pred_ard[sort_idx] .- 2 .* y_std_ard[sort_idx]), 
-      (y_pred_ard[sort_idx] .+ 2 .* y_std_ard[sort_idx]), 
-      color=(:blue, 0.15), label="±2σ (95% confidence)")
+band!(
+    ax_unc1, x_plot,
+    (y_pred_ard[sort_idx] .- 2 .* y_std_ard[sort_idx]),
+    (y_pred_ard[sort_idx] .+ 2 .* y_std_ard[sort_idx]),
+    color = (:blue, 0.15), label = "±2σ (95% confidence)"
+)
 
-axislegend(ax_unc1, position=:lt)
+axislegend(ax_unc1, position = :lt)
 
 # Panel 2: All methods uncertainty comparison (if available)
-ax_unc2 = Axis(fig_uncertainty[1, 2], 
-    title="Uncertainty Comparison Across Methods", 
-    xlabel="Test Sample Index", 
-    ylabel="Output Value")
+ax_unc2 = Axis(
+    fig_uncertainty[1, 2],
+    title = "Uncertainty Comparison Across Methods",
+    xlabel = "Test Sample Index",
+    ylabel = "Output Value"
+)
 
 # Plot true values
-lines!(ax_unc2, x_plot, y_test_true[sort_idx], color=:black, linewidth=3, label="True Values")
+lines!(ax_unc2, x_plot, y_test_true[sort_idx], color = :black, linewidth = 3, label = "True Values")
 
 # Plot FastARD with uncertainty
-lines!(ax_unc2, x_plot, y_pred_ard[sort_idx], color=:blue, linewidth=2, label="FastARD")
-band!(ax_unc2, x_plot, 
-      (y_pred_ard[sort_idx] .- y_std_ard[sort_idx]), 
-      (y_pred_ard[sort_idx] .+ y_std_ard[sort_idx]), 
-      color=(:blue, 0.2), label="FastARD ±1σ")
+lines!(ax_unc2, x_plot, y_pred_ard[sort_idx], color = :blue, linewidth = 2, label = "FastARD")
+band!(
+    ax_unc2, x_plot,
+    (y_pred_ard[sort_idx] .- y_std_ard[sort_idx]),
+    (y_pred_ard[sort_idx] .+ y_std_ard[sort_idx]),
+    color = (:blue, 0.2), label = "FastARD ±1σ"
+)
 
 # Plot Pinv with simple uncertainty estimate
-lines!(ax_unc2, x_plot, y_pred_pinv[sort_idx], color=:red, linewidth=2, label="Pinv")
-band!(ax_unc2, x_plot, 
-      (y_pred_pinv[sort_idx] .- y_std_pinv[sort_idx]), 
-      (y_pred_pinv[sort_idx] .+ y_std_pinv[sort_idx]), 
-      color=(:red, 0.15), label="Pinv ±1σ")
+lines!(ax_unc2, x_plot, y_pred_pinv[sort_idx], color = :red, linewidth = 2, label = "Pinv")
+band!(
+    ax_unc2, x_plot,
+    (y_pred_pinv[sort_idx] .- y_std_pinv[sort_idx]),
+    (y_pred_pinv[sort_idx] .+ y_std_pinv[sort_idx]),
+    color = (:red, 0.15), label = "Pinv ±1σ"
+)
 
 # Add best additional method if available
 if !isempty(methods_results) && best_pred !== nothing
-    lines!(ax_unc2, x_plot, best_pred[sort_idx], color=:green, linewidth=2, 
-           label="$best_method_name")
+    lines!(
+        ax_unc2, x_plot, best_pred[sort_idx], color = :green, linewidth = 2,
+        label = "$best_method_name"
+    )
     # Note: Most methods don't provide uncertainty estimates, so only prediction line
 end
 
-axislegend(ax_unc2, position=:lt)
+axislegend(ax_unc2, position = :lt)
 
 # Panel 3: Uncertainty calibration analysis
-ax_unc3 = Axis(fig_uncertainty[2, 1], 
-    title="Uncertainty Calibration Analysis", 
-    xlabel="Predicted Uncertainty (σ)", 
-    ylabel="Actual Error |y_true - y_pred|")
+ax_unc3 = Axis(
+    fig_uncertainty[2, 1],
+    title = "Uncertainty Calibration Analysis",
+    xlabel = "Predicted Uncertainty (σ)",
+    ylabel = "Actual Error |y_true - y_pred|"
+)
 
 # Scatter plot of predicted uncertainty vs actual error
-scatter!(ax_unc3, y_std_ard, abs.(y_pred_ard .- y_test_true), 
-         color=:blue, alpha=0.6, markersize=8, label="FastARD")
+scatter!(
+    ax_unc3, y_std_ard, abs.(y_pred_ard .- y_test_true),
+    color = :blue, alpha = 0.6, markersize = 8, label = "FastARD"
+)
 
 # Add perfect calibration line (y=x)
 max_val = max(maximum(y_std_ard), maximum(abs.(y_pred_ard .- y_test_true)))
-lines!(ax_unc3, [0, max_val], [0, max_val], color=:gray, linestyle=:dash, 
-       linewidth=2, label="Perfect Calibration")
+lines!(
+    ax_unc3, [0, max_val], [0, max_val], color = :gray, linestyle = :dash,
+    linewidth = 2, label = "Perfect Calibration"
+)
 
 # Add linear regression line for actual calibration
 if length(y_std_ard) > 1
@@ -1356,17 +1426,21 @@ if length(y_std_ard) > 1
     X_calib = [ones(length(y_std_ard)) y_std_ard]
     β_calib = X_calib \ abs.(y_pred_ard .- y_test_true)
     y_fit = X_calib * β_calib
-    lines!(ax_unc3, y_std_ard, y_fit, color=:red, linewidth=2, 
-           label="Actual Calibration")
+    lines!(
+        ax_unc3, y_std_ard, y_fit, color = :red, linewidth = 2,
+        label = "Actual Calibration"
+    )
 end
 
-axislegend(ax_unc3, position=:rt)
+axislegend(ax_unc3, position = :rt)
 
 # Panel 4: Coverage probability analysis
-ax_unc4 = Axis(fig_uncertainty[2, 2], 
-    title="Coverage Probability Analysis", 
-    xlabel="Confidence Level", 
-    ylabel="Actual Coverage")
+ax_unc4 = Axis(
+    fig_uncertainty[2, 2],
+    title = "Coverage Probability Analysis",
+    xlabel = "Confidence Level",
+    ylabel = "Actual Coverage"
+)
 
 # Calculate coverage for different confidence levels
 confidence_levels = [0.5, 0.68, 0.8, 0.9, 0.95, 0.99]
@@ -1389,7 +1463,7 @@ for conf_level in confidence_levels
     else
         1.0
     end
-    
+
     # Count how many predictions fall within this confidence interval
     within_interval = sum(abs.(y_pred_ard .- y_test_true) .<= z_score .* y_std_ard)
     coverage = within_interval / length(y_test_true)
@@ -1397,12 +1471,16 @@ for conf_level in confidence_levels
 end
 
 # Plot expected vs actual coverage
-lines!(ax_unc4, confidence_levels, confidence_levels, color=:gray, linestyle=:dash, 
-       linewidth=2, label="Perfect Coverage")
-scatterlines!(ax_unc4, confidence_levels, actual_coverage, color=:blue, 
-              linewidth=2, markersize=8, label="FastARD Coverage")
+lines!(
+    ax_unc4, confidence_levels, confidence_levels, color = :gray, linestyle = :dash,
+    linewidth = 2, label = "Perfect Coverage"
+)
+scatterlines!(
+    ax_unc4, confidence_levels, actual_coverage, color = :blue,
+    linewidth = 2, markersize = 8, label = "FastARD Coverage"
+)
 
-axislegend(ax_unc4, position=:rb)
+axislegend(ax_unc4, position = :rb)
 
 save("examples/uncertainty_analysis.pdf", fig_uncertainty)
 println(" Uncertainty analysis saved as 'uncertainty_analysis.pdf'")
@@ -1415,16 +1493,16 @@ println("="^60)
 mean_uncertainty = mean(y_std_ard)
 median_uncertainty = median(y_std_ard)
 println("FastARD Uncertainty Statistics:")
-println("  Mean predicted uncertainty: $(round(mean_uncertainty, digits=4))")
-println("  Median predicted uncertainty: $(round(median_uncertainty, digits=4))")
+println("  Mean predicted uncertainty: $(round(mean_uncertainty, digits = 4))")
+println("  Median predicted uncertainty: $(round(median_uncertainty, digits = 4))")
 
 # Coverage analysis
 within_1sigma = sum(abs.(y_pred_ard .- y_test_true) .<= y_std_ard) / length(y_test_true)
 within_2sigma = sum(abs.(y_pred_ard .- y_test_true) .<= 2 .* y_std_ard) / length(y_test_true)
 
 println("\nCoverage Analysis:")
-println("  Within 1σ: $(round(within_1sigma*100, digits=1))% (expected: 68.0%)")
-println("  Within 2σ: $(round(within_2sigma*100, digits=1))% (expected: 95.0%)")
+println("  Within 1σ: $(round(within_1sigma * 100, digits = 1))% (expected: 68.0%)")
+println("  Within 2σ: $(round(within_2sigma * 100, digits = 1))% (expected: 95.0%)")
 
 # Calibration quality (tightened thresholds: ±5% of expected value)
 if within_1sigma > 0.63 && within_1sigma < 0.73
@@ -1435,7 +1513,7 @@ else
     println("  1σ Calibration: ⚠  Aggressive (uncertainty too narrow)")
 end
 
-if within_2sigma > 0.90 && within_2sigma < 1.0
+if within_2sigma > 0.9 && within_2sigma < 1.0
     println("  2σ Calibration: Well calibrated")
 elseif within_2sigma >= 1.0
     println("  2σ Calibration: ⚠  Conservative (uncertainty too wide)")
