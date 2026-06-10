@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-    tags: '*'
+    tags: ['*']
   pull_request:
 
 concurrency:
@@ -18,7 +18,9 @@ jobs:
     name: Documentation
     runs-on: ubuntu-latest
     permissions:
+      actions: write
       contents: write
+      pull-requests: read
       statuses: write
     steps:
       - uses: actions/checkout@v4
@@ -26,31 +28,12 @@ jobs:
         with:
           version: '1'
       - uses: julia-actions/cache@v2
-      - name: Configure doc environment
-        shell: julia --project=docs --color=yes {0}
-        run: |
-          using Pkg
-          Pkg.develop(PackageSpec(path=pwd()))
-          Pkg.instantiate()
-      - name: Run doctests
-        shell: julia --project=docs --color=yes {0}
-        run: |
-          using Documenter: DocMeta, doctest
-          using FastARD
-          DocMeta.setdocmeta!(FastARD, :DocTestSetup, :(using FastARD); recursive=true)
-          doctest(FastARD)
-      - name: Build docs
-        shell: julia --project=docs --color=yes {0}
-        run: |
-          using Pkg
-          Pkg.activate("docs")
-          include("docs/make.jl")
+      - uses: julia-actions/julia-buildpkg@v1
+      # Runs `julia --project=docs docs/make.jl` from the repo root (developing
+      # the package into the docs env first). make.jl already runs the doctests
+      # (`doctest = true`) and deploys (`deploydocs`), so no separate doctest or
+      # gh-pages steps are needed.
+      - uses: julia-actions/julia-docdeploy@v1
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           DOCUMENTER_KEY: ${{ secrets.DOCUMENTER_KEY }}
-      - name: Deploy docs
-        uses: peaceiris/actions-gh-pages@v4
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        with:
-          github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: docs/build
