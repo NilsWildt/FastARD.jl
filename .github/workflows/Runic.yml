@@ -1,0 +1,40 @@
+name: Runic
+
+on:
+  push:
+    branches:
+      - main
+      - dev/**
+      - feature/**
+    tags:
+      - '*'
+  pull_request:
+
+jobs:
+  runic:
+    name: Runic (Julia ${{ matrix.version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        version:
+          - '1.10'
+          - '1'
+          - 'nightly'
+    steps:
+      - uses: actions/checkout@v6
+      - uses: julia-actions/setup-julia@v2
+        with:
+          version: ${{ matrix.version }}
+      - uses: julia-actions/cache@v2
+      - name: Install Runic
+        run: |
+          julia --color=yes -e 'using Pkg; Pkg.add("Runic")'
+      - name: Run Runic (nightly)
+        run: |
+          git ls-files -z -- '*.jl' | xargs -0 julia --color=yes -m Runic --check --diff
+        if: ${{ matrix.version == 'nightly' }}
+      - name: Run Runic
+        run: |
+          git ls-files -z -- '*.jl' | xargs -0 julia --color=yes -e 'using Runic; exit(Runic.main(ARGS))' -- --check --diff
+        if: ${{ matrix.version != 'nightly' }}

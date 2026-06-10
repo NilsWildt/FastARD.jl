@@ -1,7 +1,24 @@
 # https://docs.github.com/github/administering-a-repository/configuration-options-for-dependency-updates
+#
+# Dependabot replaces CompatHelper (which is in maintenance mode) for keeping
+# both GitHub Actions and Julia [compat] bounds up to date. Updates are grouped
+# so each ecosystem produces a single weekly PR instead of one branch per
+# dependency.
 version: 2
 updates:
   - package-ecosystem: "github-actions"
-    directory: "/" # Location of package manifests
+    directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      github-actions:
+        patterns:
+          - "*"
+  - package-ecosystem: "julia"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    groups:
+      julia-deps:
+        patterns:
+          - "*"

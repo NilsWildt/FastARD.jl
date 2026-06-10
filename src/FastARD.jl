@@ -9,15 +9,11 @@ using DispatchDoctor
 using MuladdMacro
 using MultiFloats
 using TypeUtils
-const CPU_MODEL = Sys.cpu_info()[1].model
 
-if Sys.isapple() && Sys.ARCH in (:aarch64, :arm64)
-    @info "Using `AppleAccelerate.jl` for Apple Silicon."
-    using AppleAccelerate
-elseif Sys.ARCH == :x86_64 && occursin(r"intel"i, CPU_MODEL)
-    @info "Detected Intel x86_64 CPU. Loading `MKL.jl`."
-    using MKL
-end
+# Optional BLAS backends ship as package extensions (see ext/): if the user's
+# environment has AppleAccelerate (Apple Silicon) or MKL (Intel) installed, the
+# corresponding extension loads it and swaps the BLAS backend as a side effect.
+# FastARD itself does not force a backend, so it stays platform-portable.
 
 export FastARDRegressor, fit!, predict, get_active_coefficients, predict_with_uncertainty
 
