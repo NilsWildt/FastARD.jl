@@ -22,18 +22,18 @@ jobs:
     name: Julia ${{ matrix.version }}
     runs-on: ubuntu-latest
     timeout-minutes: 60
-    # "pre" (next Julia release) is informational and must not block merges.
-    continue-on-error: ${{ matrix.version == 'pre' }}
     permissions:
       actions: write
       contents: read
     strategy:
       fail-fast: false
       matrix:
+        # No "pre": JET tracks compiler internals and has no release compatible
+        # with Julia pre-releases, so a "pre" entry fails at dependency
+        # resolution and never tests the package.
         version:
           - "1.12"   # minimum supported version (the [compat] floor)
           - "1"      # latest stable release
-          - "pre"    # next release, non-blocking early warning
     steps:
       - uses: actions/checkout@v4
       - uses: julia-actions/setup-julia@v2
@@ -45,31 +45,10 @@ jobs:
         run: julia -e 'using Pkg; Pkg.Registry.update()'
       - uses: julia-actions/julia-runtest@v1
 
-  downgrade:
-    # Resolve the *lowest* versions allowed by [compat] and run the tests, to
-    # prove the lower compat bounds are real. If this fails, raise the offending
-    # dependency's lower bound in Project.toml.
-    name: Downgrade compat (Julia 1)
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    permissions:
-      actions: write
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
-        with:
-          version: "1"   # compat floor is 1.12; do not use 1.10
-          arch: x64
-      - uses: julia-actions/julia-downgrade-compat@v2
-        with:
-          # stdlibs are not downgradeable; the test-only tooling is not shipped,
-          # so its lower bounds are irrelevant to the package. Downgrading
-          # TestItemRunner pulls an old TestItems that conflicts with TestItems = "1".
-          skip: LinearAlgebra, Statistics, TestItemRunner, TestItems, Aqua, JET, ExplicitImports
-      - uses: julia-actions/cache@v2
-      - uses: julia-actions/julia-buildpkg@v1
-      - uses: julia-actions/julia-runtest@v1
-        with:
-          allow_reresolve: false
-          force_latest_compatible_version: false
+  # No downgrade-compat job: julia-downgrade-compat also rewrites test/Project.toml
+  # and pins TestItemRunner to its floor (1.0.0), which hard-requires the old
+  # TestItems 0.1 — an empty intersection with TestItems = "1" that its `skip`
+  # input does not prevent. The package's own runtime-dep floors are light and
+  # were verified to resolve and pass at their lower bounds, and Aqua's
+  # deps_compat check (in the test job) already validates the bounds are
+  # well-formed. See CI_SETUP.md for the rationale.
