@@ -286,3 +286,30 @@ end
     @test length(models) == 3
     @test all(mi -> mi isa FastARD.FastARDRegressor, models)
 end
+
+@testitem "beta_recompute_tol: default exact, throttled stays accurate" begin
+    using FastARD, Test, Random, Statistics, LinearAlgebra
+
+    Random.seed!(21)
+    n, p = 300, 60
+    X = randn(n, p)
+    coef = vcat(randn(6) .* 3, zeros(p - 6))
+    y = X * coef + 0.3 * std(X * coef) * randn(n)
+
+    # default tol must be exactly the historical behavior (same trajectory)
+    m_ref = FastARD.FastARDRegressor(compute_score = true)
+    FastARD.fit!(m_ref, X, y)
+    m_def = FastARD.FastARDRegressor(compute_score = true, beta_recompute_tol = 1.0e-6)
+    FastARD.fit!(m_def, X, y)
+    @test length(m_def.scores) == length(m_ref.scores)
+    @test findall(m_def.active) == findall(m_ref.active)
+    @test m_def.coef ≈ m_ref.coef
+
+    # throttled: must run, converge, and predict close to the reference
+    m_thr = FastARD.FastARDRegressor(beta_recompute_tol = 1.0e-3)
+    FastARD.fit!(m_thr, X, y)
+    @test sum(m_thr.active) > 0
+    y_ref = FastARD.predict(m_ref, X)
+    y_thr = FastARD.predict(m_thr, X)
+    @test maximum(abs.(y_ref .- y_thr)) / maximum(abs.(y_ref)) < 0.05
+end

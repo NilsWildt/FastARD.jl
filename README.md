@@ -47,6 +47,18 @@ println("Selected $(length(active_indices)) out of 35 basis functions")
 y_pred, y_std = predict_with_uncertainty(model, Psi_test)
 ```
 
+## Performance Tips
+
+- **Use a fast BLAS backend.** The fitting loop is dense linear algebra. On Apple
+  silicon, `using AppleAccelerate` before `using FastARD` activates the bundled
+  package extension and swaps the BLAS backend (~3.5× faster on large problems);
+  on Intel CPUs use `using MKL`. Add the backend package to your environment —
+  FastARD only declares them as optional (weak) dependencies.
+- **Large active sets:** if fits select many basis functions, the per-iteration
+  statistics refresh dominates. `FastARDRegressor(beta_recompute_tol=1e-3)`
+  throttles it for a ~5–15× speedup with an essentially unchanged model
+  (the default `1e-6` matches the reference algorithm exactly).
+
 ## Tested Applications
 
 The package includes comprehensive tests demonstrating performance on the **Ishigami function**, a standard benchmark for:
