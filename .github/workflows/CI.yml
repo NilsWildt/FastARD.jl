@@ -63,8 +63,11 @@ jobs:
           arch: x64
       - uses: julia-actions/julia-downgrade-compat@v2
         with:
-          skip: LinearAlgebra, Statistics   # stdlibs in [compat], not downgradeable
-      - uses: julia-actions/cache@v3
+          # stdlibs are not downgradeable; the test-only tooling is not shipped,
+          # so its lower bounds are irrelevant to the package. Downgrading
+          # TestItemRunner pulls an old TestItems that conflicts with TestItems = "1".
+          skip: LinearAlgebra, Statistics, TestItemRunner, TestItems, Aqua, JET, ExplicitImports
+      - uses: julia-actions/cache@v2
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-runtest@v1
         with:
