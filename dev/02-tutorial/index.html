@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="en"><head><meta charset="UTF-8"/><meta name="viewport" content="width=device-width, initial-scale=1.0"/><title>Tutorial · FastARD.jl</title><meta name="title" content="Tutorial · FastARD.jl"/><meta property="og:title" content="Tutorial · FastARD.jl"/><meta property="twitter:title" content="Tutorial · FastARD.jl"/><meta name="description" content="Documentation for FastARD.jl."/><meta property="og:description" content="Documentation for FastARD.jl."/><meta property="twitter:description" content="Documentation for FastARD.jl."/><meta property="og:url" content="https://NilsWildt.github.io/FastARD.jl/02-tutorial/"/><meta property="twitter:url" content="https://NilsWildt.github.io/FastARD.jl/02-tutorial/"/><link rel="canonical" href="https://NilsWildt.github.io/FastARD.jl/02-tutorial/"/><script data-outdated-warner src="../assets/warner.js"></script><link href="https://cdnjs.cloudflare.com/ajax/libs/lato-font/3.0.0/css/lato-font.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/juliamono/0.050/juliamono.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/fontawesome.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/solid.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.2/css/brands.min.css" rel="stylesheet" type="text/css"/><link href="https://cdnjs.cloudflare.com/ajax/libs/KaTeX/0.16.8/katex.min.css" rel="stylesheet" type="text/css"/><script>documenterBaseURL=".."</script><script src="https://cdnjs.cloudflare.com/ajax/libs/require.js/2.3.6/require.min.js" data-main="../assets/documenter.js"></script><script src="../search_index.js"></script><script src="../siteinfo.js"></script><script src="../../versions.js"></script><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-mocha.css" data-theme-name="catppuccin-mocha"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-macchiato.css" data-theme-name="catppuccin-macchiato"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-frappe.css" data-theme-name="catppuccin-frappe"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/catppuccin-latte.css" data-theme-name="catppuccin-latte"/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-dark.css" data-theme-name="documenter-dark" data-theme-primary-dark/><link class="docs-theme-link" rel="stylesheet" type="text/css" href="../assets/themes/documenter-light.css" data-theme-name="documenter-light" data-theme-primary/><script src="../assets/themeswap.js"></script></head><body><div id="documenter"><nav class="docs-sidebar"><div class="docs-package-name"><span class="docs-autofit"><a href="../">FastARD.jl</a></span></div><button class="docs-search-query input is-rounded is-small is-clickable my-2 mx-auto py-1 px-2" id="documenter-search-query">Search docs (Ctrl + /)</button><ul class="docs-menu"><li><a class="tocitem" href="../">Home</a></li><li><a class="tocitem" href="../01-getting-started/">Getting Started</a></li><li class="is-active"><a class="tocitem" href>Tutorial</a><ul class="internal"><li><a class="tocitem" href="#Basic-Polynomial-Chaos-Expansion"><span>Basic Polynomial Chaos Expansion</span></a></li><li><a class="tocitem" href="#Uncertainty-Quantification"><span>Uncertainty Quantification</span></a></li><li><a class="tocitem" href="#Method-Comparison"><span>Method Comparison</span></a></li><li><a class="tocitem" href="#Working-with-Different-Precision-Types"><span>Working with Different Precision Types</span></a></li><li><a class="tocitem" href="#Parameter-Tuning-Guidelines"><span>Parameter Tuning Guidelines</span></a></li><li><a class="tocitem" href="#Interpreting-Results"><span>Interpreting Results</span></a></li><li><a class="tocitem" href="#Best-Practices-for-Polynomial-Chaos-Expansion"><span>Best Practices for Polynomial Chaos Expansion</span></a></li><li><a class="tocitem" href="#Next-Steps"><span>Next Steps</span></a></li></ul></li><li><a class="tocitem" href="../03-examples/">Examples</a></li><li><a class="tocitem" href="../95-reference/">API Reference</a></li></ul><div class="docs-version-selector field has-addons"><div class="control"><span class="docs-label button is-static is-size-7">Version</span></div><div class="docs-selector control is-expanded"><div class="select is-fullwidth is-size-7"><select id="documenter-version-selector"></select></div></div></div></nav><div class="docs-main"><header class="docs-navbar"><a class="docs-sidebar-button docs-navbar-link fa-solid fa-bars is-hidden-desktop" id="documenter-sidebar-button" href="#"></a><nav class="breadcrumb"><ul class="is-hidden-mobile"><li class="is-active"><a href>Tutorial</a></li></ul><ul class="is-hidden-tablet"><li class="is-active"><a href>Tutorial</a></li></ul></nav><div class="docs-right"><a class="docs-navbar-link" href="https://github.com/NilsWildt/FastARD.jl/blob/main/docs/src/02-tutorial.md#" title="Edit source on GitHub"><span class="docs-icon fa-solid"></span></a><a class="docs-settings-button docs-navbar-link fa-solid fa-gear" id="documenter-settings-button" href="#" title="Settings"></a><a class="docs-article-toggle-button fa-solid fa-chevron-up" id="documenter-article-toggle-button" href="javascript:;" title="Collapse all docstrings"></a></div></header><article class="content" id="documenter-page"><h1 id="Tutorial"><a class="docs-heading-anchor" href="#Tutorial">Tutorial</a><a id="Tutorial-1"></a><a class="docs-heading-anchor-permalink" href="#Tutorial" title="Permalink"></a></h1><p>This tutorial provides a comprehensive guide to using FastARD.jl for sparse regression with uncertainty quantification, based on the tested Ishigami function example.</p><h2 id="Basic-Polynomial-Chaos-Expansion"><a class="docs-heading-anchor" href="#Basic-Polynomial-Chaos-Expansion">Basic Polynomial Chaos Expansion</a><a id="Basic-Polynomial-Chaos-Expansion-1"></a><a class="docs-heading-anchor-permalink" href="#Basic-Polynomial-Chaos-Expansion" title="Permalink"></a></h2><p>Let&#39;s start with a controlled example using polynomial chaos expansion (PCE) for function approximation with automatic sparsity detection.</p><pre><code class="language-julia hljs">using FastARD
+using Random, Statistics, LinearAlgebra
+
+Random.seed!(123)
+
+# Define the Ishigami function - a standard test function for uncertainty quantification
+function ishigami(x::AbstractVector; a=7.0, b=0.1)
+    x1, x2, x3 = x[1], x[2], x[3]
+    return sin(x1) + a * sin(x2)^2 + b * x3^4 * sin(x1)
+end
+
+# Generate training data
+n_train = 300
+X_train = 2π * rand(n_train, 3) .- π  # Sample from [-π, π]³
+y_train = [ishigami(X_train[i, :]) for i in 1:n_train]
+noise_std = 0.5
+y_train_noisy = y_train + noise_std * randn(n_train)
+
+println(&quot;Training samples: $n_train&quot;)
+println(&quot;Signal-to-noise ratio: $(std(y_train) / noise_std)&quot;)</code></pre><h3 id="Generating-Polynomial-Basis-Functions"><a class="docs-heading-anchor" href="#Generating-Polynomial-Basis-Functions">Generating Polynomial Basis Functions</a><a id="Generating-Polynomial-Basis-Functions-1"></a><a class="docs-heading-anchor-permalink" href="#Generating-Polynomial-Basis-Functions" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Generate Legendre polynomial basis
+function legendre_polynomials(x, max_degree)
+    n = length(x)
+    polys = zeros(n, max_degree + 1)
+    
+    # P0(x) = 1, P1(x) = x
+    polys[:, 1] .= 1.0
+    if max_degree &gt;= 1
+        polys[:, 2] = x
+    end
+    
+    # Recurrence relation: (n+1)P_{n+1} = (2n+1)xP_n - nP_{n-1}
+    for i in 2:max_degree
+        polys[:, i+1] = ((2*i-1) * x .* polys[:, i] - (i-1) * polys[:, i-1]) / i
+    end
+    
+    return polys
+end
+
+# Generate multivariate polynomial basis
+function generate_pce_basis(X, max_degree=3)
+    n_samples, n_dims = size(X)
+    X_normalized = X / π  # Transform to [-1,1]
+    
+    # Generate univariate polynomials for each dimension
+    polys = [legendre_polynomials(X_normalized[:, i], max_degree) for i in 1:n_dims]
+    
+    # Create multivariate basis using tensor products
+    basis_terms = []
+    for i in 0:max_degree
+        for j in 0:max_degree
+            for k in 0:max_degree
+                if i + j + k &lt;= max_degree
+                    term = polys[1][:, i+1] .* polys[2][:, j+1] .* polys[3][:, k+1]
+                    push!(basis_terms, term)
+                end
+            end
+        end
+    end
+    
+    return hcat(basis_terms...)
+end
+
+max_degree = 4
+Psi_train = generate_pce_basis(X_train, max_degree)
+n_basis = size(Psi_train, 2)
+println(&quot;Generated $n_basis polynomial basis functions&quot;)</code></pre><h3 id="Fitting-the-FastARD-Model"><a class="docs-heading-anchor" href="#Fitting-the-FastARD-Model">Fitting the FastARD Model</a><a id="Fitting-the-FastARD-Model-1"></a><a class="docs-heading-anchor-permalink" href="#Fitting-the-FastARD-Model" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Create and fit the model
+model = FastARDRegressor(verbose=true, compute_score=true, n_iter=200)
+fit!(model, Psi_train, y_train_noisy)
+
+# Analyze the results
+active_indices, active_coefs = get_active_coefficients(model)
+println(&quot;Selected $(length(active_indices)) basis functions out of $n_basis&quot;)
+println(&quot;Active indices: $active_indices&quot;)
+println(&quot;Compression ratio: $(round(length(active_indices)/n_basis, digits=3))&quot;)</code></pre><h3 id="Visualizing-Convergence"><a class="docs-heading-anchor" href="#Visualizing-Convergence">Visualizing Convergence</a><a id="Visualizing-Convergence-1"></a><a class="docs-heading-anchor-permalink" href="#Visualizing-Convergence" title="Permalink"></a></h3><p>If you computed scores, you can visualize the convergence:</p><pre><code class="language-julia hljs">using CairoMakie
+
+if !isempty(model.scores)
+    fig = Figure()
+    ax = Axis(fig[1, 1], xlabel=&quot;Iteration&quot;, ylabel=&quot;Log Marginal Likelihood&quot;, 
+              title=&quot;FastARD Convergence&quot;)
+    scatterlines!(ax, 1:length(model.scores), model.scores, linewidth=2, markersize=6)
+    save(&quot;convergence.pdf&quot;, fig)
+end</code></pre><h2 id="Uncertainty-Quantification"><a class="docs-heading-anchor" href="#Uncertainty-Quantification">Uncertainty Quantification</a><a id="Uncertainty-Quantification-1"></a><a class="docs-heading-anchor-permalink" href="#Uncertainty-Quantification" title="Permalink"></a></h2><p>One of ARD&#39;s key advantages is providing uncertainty estimates for predictions.</p><pre><code class="language-julia hljs"># Generate test data
+n_test = 100
+X_test = 2π * rand(n_test, 3) .- π
+y_test_true = [ishigami(X_test[i, :]) for i in 1:n_test]
+Psi_test = generate_pce_basis(X_test, max_degree)
+
+# Get predictions with uncertainty
+y_pred, y_std = predict_with_uncertainty(model, Psi_test)
+
+# Analyze uncertainty quality
+residuals = abs.(y_pred .- y_test_true)
+println(&quot;Mean prediction uncertainty: &quot;, mean(y_std))
+println(&quot;Mean absolute error: &quot;, mean(residuals))
+
+# Check if uncertainties are well-calibrated
+# Points within 1σ should contain ~68% of true values
+within_1sigma = sum(residuals .&lt;= y_std) / length(residuals)
+within_2sigma = sum(residuals .&lt;= 2 .* y_std) / length(residuals)
+
+println(&quot;Fraction within 1σ: $(round(within_1sigma, digits=3)) (should be ~0.68)&quot;)
+println(&quot;Fraction within 2σ: $(round(within_2sigma, digits=3)) (should be ~0.95)&quot;)</code></pre><h2 id="Method-Comparison"><a class="docs-heading-anchor" href="#Method-Comparison">Method Comparison</a><a id="Method-Comparison-1"></a><a class="docs-heading-anchor-permalink" href="#Method-Comparison" title="Permalink"></a></h2><p>FastARD can be compared against traditional methods like pseudoinverse regression.</p><pre><code class="language-julia hljs"># Compare with pseudoinverse method
+coef_pinv = pinv(Psi_train) * y_train_noisy
+y_pred_pinv = Psi_test * coef_pinv
+
+# Calculate metrics
+rmse_ard = sqrt(mean((y_pred .- y_test_true).^2))
+rmse_pinv = sqrt(mean((y_pred_pinv .- y_test_true).^2))
+
+effective_rank_ard = sum(model.active)
+effective_rank_pinv = n_basis
+compression_ratio = effective_rank_ard / effective_rank_pinv
+
+println(&quot;FastARD RMSE: $rmse_ard&quot;)
+println(&quot;Pinv RMSE: $rmse_pinv&quot;)
+println(&quot;FastARD uses $(effective_rank_ard)/$n_basis features&quot;)
+println(&quot;Pinv uses all $effective_rank_pinv features&quot;)
+println(&quot;Compression ratio: $(round(compression_ratio, digits=3))&quot;)</code></pre><h2 id="Working-with-Different-Precision-Types"><a class="docs-heading-anchor" href="#Working-with-Different-Precision-Types">Working with Different Precision Types</a><a id="Working-with-Different-Precision-Types-1"></a><a class="docs-heading-anchor-permalink" href="#Working-with-Different-Precision-Types" title="Permalink"></a></h2><p>FastARD supports different numerical precisions for enhanced accuracy or performance.</p><pre><code class="language-julia hljs">using MultiFloats
+
+# High precision computation
+model_hp = FastARDRegressor(MultiFloat{Float64,4}, verbose=false)
+fit!(model_hp, Psi_train, y_train_noisy)
+
+# Single precision for speed
+model_sp = FastARDRegressor(Float32, verbose=false)  
+fit!(model_sp, Float32.(Psi_train), Float32.(y_train_noisy))
+
+# Compare results
+active_hp, coef_hp = get_active_coefficients(model_hp)
+active_sp, coef_sp = get_active_coefficients(model_sp)
+
+println(&quot;High precision active features: &quot;, active_hp)
+println(&quot;Single precision active features: &quot;, active_sp)</code></pre><h2 id="Parameter-Tuning-Guidelines"><a class="docs-heading-anchor" href="#Parameter-Tuning-Guidelines">Parameter Tuning Guidelines</a><a id="Parameter-Tuning-Guidelines-1"></a><a class="docs-heading-anchor-permalink" href="#Parameter-Tuning-Guidelines" title="Permalink"></a></h2><p>While ARD is largely automatic, some parameters may need adjustment based on your problem characteristics:</p><h3 id="Convergence-Parameters"><a class="docs-heading-anchor" href="#Convergence-Parameters">Convergence Parameters</a><a id="Convergence-Parameters-1"></a><a class="docs-heading-anchor-permalink" href="#Convergence-Parameters" title="Permalink"></a></h3><pre><code class="language-julia hljs"># For difficult problems, increase iterations and decrease tolerance
+model_strict = FastARDRegressor(
+    n_iter=500,      # More iterations for complex problems
+    tol=1e-8,        # Stricter convergence criterion
+    verbose=true     # Monitor progress
+)</code></pre><h3 id="Numerical-Stability"><a class="docs-heading-anchor" href="#Numerical-Stability">Numerical Stability</a><a id="Numerical-Stability-1"></a><a class="docs-heading-anchor-permalink" href="#Numerical-Stability" title="Permalink"></a></h3><pre><code class="language-julia hljs"># For ill-conditioned polynomial basis matrices
+model_stable = FastARDRegressor(
+    lambda_reg=1e-6,  # Small regularization for stability
+    verbose=true
+)</code></pre><h2 id="Interpreting-Results"><a class="docs-heading-anchor" href="#Interpreting-Results">Interpreting Results</a><a id="Interpreting-Results-1"></a><a class="docs-heading-anchor-permalink" href="#Interpreting-Results" title="Permalink"></a></h2><h3 id="Feature-Importance-in-Polynomial-Basis"><a class="docs-heading-anchor" href="#Feature-Importance-in-Polynomial-Basis">Feature Importance in Polynomial Basis</a><a id="Feature-Importance-in-Polynomial-Basis-1"></a><a class="docs-heading-anchor-permalink" href="#Feature-Importance-in-Polynomial-Basis" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Features with smaller alpha values are more important
+active_indices, active_coefs = get_active_coefficients(model)
+alpha_active = model.alpha[active_indices]
+
+# Sort by importance (inverse of alpha)
+importance_order = sortperm(alpha_active)
+println(&quot;Most important polynomial terms:&quot;)
+for i in importance_order[1:min(5, length(importance_order))]
+    feat_idx = active_indices[i]
+    println(&quot;Basis $feat_idx: coef=$(round(active_coefs[i], digits=4)), α=$(round(alpha_active[i], digits=2))&quot;)
+end</code></pre><h3 id="Model-Quality-Metrics"><a class="docs-heading-anchor" href="#Model-Quality-Metrics">Model Quality Metrics</a><a id="Model-Quality-Metrics-1"></a><a class="docs-heading-anchor-permalink" href="#Model-Quality-Metrics" title="Permalink"></a></h3><pre><code class="language-julia hljs"># Effective number of parameters (for model comparison)
+effective_params = sum(model.active)
+
+# Prediction accuracy on training data
+y_pred_train = predict(model, Psi_train)
+rmse_train = sqrt(mean((y_pred_train .- y_train_noisy).^2))
+
+println(&quot;Effective parameters: $effective_params out of $n_basis&quot;)
+println(&quot;Training RMSE: $rmse_train&quot;)
+println(&quot;Compression achieved: $(round((1 - effective_params/n_basis)*100, digits=1))%&quot;)
+
+# Log marginal likelihood (if computed)
+if !isempty(model.scores)
+    println(&quot;Final log marginal likelihood: &quot;, round(model.scores[end], digits=2))
+end</code></pre><h2 id="Best-Practices-for-Polynomial-Chaos-Expansion"><a class="docs-heading-anchor" href="#Best-Practices-for-Polynomial-Chaos-Expansion">Best Practices for Polynomial Chaos Expansion</a><a id="Best-Practices-for-Polynomial-Chaos-Expansion-1"></a><a class="docs-heading-anchor-permalink" href="#Best-Practices-for-Polynomial-Chaos-Expansion" title="Permalink"></a></h2><ol><li><strong>Basis Selection</strong>: Use orthogonal polynomials (Legendre, Hermite) for better numerical conditioning</li><li><strong>Degree Selection</strong>: Start with moderate polynomial degrees (3-5) and increase if needed</li><li><strong>Domain Transformation</strong>: Always transform input domains to the standard range [-1,1] or [0,1]</li><li><strong>Convergence Monitoring</strong>: Enable <code>verbose=true</code> and <code>compute_score=true</code> for monitoring</li><li><strong>Uncertainty Validation</strong>: Validate uncertainty estimates using coverage probability tests</li></ol><h2 id="Next-Steps"><a class="docs-heading-anchor" href="#Next-Steps">Next Steps</a><a id="Next-Steps-1"></a><a class="docs-heading-anchor-permalink" href="#Next-Steps" title="Permalink"></a></h2><ul><li>See <a href="../03-examples/">Examples</a> for the complete Ishigami function test</li><li>Check the <a href="../95-reference/">API Reference</a> for detailed function documentation</li></ul></article><nav class="docs-footer"><a class="docs-footer-prevpage" href="../01-getting-started/">« Getting Started</a><a class="docs-footer-nextpage" href="../03-examples/">Examples »</a><div class="flexbox-break"></div><p class="footer-message">Powered by <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> and the <a href="https://julialang.org/">Julia Programming Language</a>.</p></nav></div><div class="modal" id="documenter-settings"><div class="modal-background"></div><div class="modal-card"><header class="modal-card-head"><p class="modal-card-title">Settings</p><button class="delete"></button></header><section class="modal-card-body"><p><label class="label">Theme</label><div class="select"><select id="documenter-themepicker"><option value="auto">Automatic (OS)</option><option value="documenter-light">documenter-light</option><option value="documenter-dark">documenter-dark</option><option value="catppuccin-latte">catppuccin-latte</option><option value="catppuccin-frappe">catppuccin-frappe</option><option value="catppuccin-macchiato">catppuccin-macchiato</option><option value="catppuccin-mocha">catppuccin-mocha</option></select></div></p><hr/><p>This document was generated with <a href="https://github.com/JuliaDocs/Documenter.jl">Documenter.jl</a> version 1.17.0 on <span class="colophon-date" title="Wednesday 10 June 2026 14:51">Wednesday 10 June 2026</span>. Using Julia version 1.12.6.</p></section><footer class="modal-card-foot"></footer></div></div></div></body></html>
