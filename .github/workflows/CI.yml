@@ -32,7 +32,7 @@ jobs:
         # with Julia pre-releases, so a "pre" entry fails at dependency
         # resolution and never tests the package.
         version:
-          - "1.12"   # minimum supported version (the [compat] floor)
+          - "1.13"   # minimum supported version (the [compat] floor)
           - "1"      # latest stable release
     steps:
       - uses: actions/checkout@v4
