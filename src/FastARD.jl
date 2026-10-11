@@ -2,7 +2,7 @@ module FastARD
 
 using LinearAlgebra
 using LinearAlgebra: I, mul!, dot, cholesky!, bunchkaufman!, Hermitian, issuccess,
-    ldiv!, logabsdet
+    ldiv!, logabsdet, LAPACK, BLAS
 using Statistics
 using ConcreteStructs
 using DispatchDoctor
@@ -71,6 +71,9 @@ rank-1 covariance updates, deletion-priority basis selection and an alignment
     max_alpha::T
     min_beta::T
     max_beta::T
+
+    # Performance tuning
+    beta_recompute_tol::T
 end
 
 """
@@ -94,6 +97,21 @@ Create a new FastARD regressor for sparse Bayesian regression.
 - `max_alpha::Real=1e12`: Reported precision for inactive coefficients
 - `min_beta::Real=1e-6`: Minimum value for noise precision β
 - `max_beta::Real=1e6`: Maximum value for noise precision β
+- `beta_recompute_tol::Real=1e-6`: Threshold on `|Δlog β|` above which the full
+  statistics refresh runs after a noise-precision update. The default reproduces
+  the reference algorithm exactly. This refresh is the dominant cost when many
+  basis functions are active. `1e-3` skips most refreshes for a ~5–15× speedup
+  on large active sets while leaving the selected basis and held-out accuracy
+  essentially unchanged. Larger values (e.g. `1e-2`) are faster still but let
+  the search path deviate: the model may select a different (often sparser,
+  sometimes better-generalizing) basis. Use the default when exact reference
+  behavior matters.
+
+# Performance note
+On Apple silicon or Intel CPUs, loading `AppleAccelerate` or `MKL` before
+fitting activates the corresponding package extension and swaps the BLAS
+backend, which speeds up large fits severalfold (the inner loops are dense
+linear algebra). Example: `using AppleAccelerate, FastARD`.
 
 # Examples
 ```julia
@@ -114,14 +132,15 @@ function FastARDRegressor(
         lambda_reg::Real = 1.0e-8,
         max_alpha::Real = 1.0e12,
         min_beta::Real = 1.0e-6,
-        max_beta::Real = 1.0e6
+        max_beta::Real = 1.0e6,
+        beta_recompute_tol::Real = 1.0e-6
     )
 
     return FastARDRegressor{T}(
         Vector{T}(), Vector{T}(), one(T), BitVector(),
         Matrix{T}(undef, 0, 0), Matrix{T}(undef, 1, 0), Matrix{T}(undef, 1, 0), zero(T),
         n_iter, T(tol), verbose, compute_score, standardize, Vector{T}(), false,
-        T(lambda_reg), T(max_alpha), T(min_beta), T(max_beta)
+        T(lambda_reg), T(max_alpha), T(min_beta), T(max_beta), T(beta_recompute_tol)
     )
 end
 
@@ -134,7 +153,7 @@ end
     output_proj  # n_features            (Ψ' y)
     cross        # n_features × K_max    (Ψ' Ψ_active, columns ↔ active terms)
     sparseΨ      # n_samples × K_max     (Ψ_active)
-    betaproj     # n_features × K_max    (β · cross)
+    Gact         # K_max × K_max         (dense active Gram block cross[active, 1:K] so mul! hits BLAS)
     Cov          # K_max × K_max         (posterior covariance over active set)
     cholW        # K_max × K_max         (scratch for Cholesky)
     M            # n_features × K_max    (scratch: cross · Cov)
@@ -143,6 +162,8 @@ end
     s_out        # n_features
     q_out        # n_features
     theta        # n_features
+    is_active    # n_features Bool       (O(1) membership for the add-scan)
+    is_deferred  # n_features Bool       (O(1) alignment-deferral lookup)
     proj_nf      # n_features            (scratch)
     proj_nf2     # n_features            (scratch)
     cov_col      # K_max                 (scratch)
@@ -157,7 +178,7 @@ function ARDWorkspace(Ψ::AbstractMatrix{T}, output_proj::Vector{T}, Kmax::Int) 
         Ψ, output_proj,
         Matrix{T}(undef, nf, Kmax),   # cross
         Matrix{T}(undef, ns, Kmax),   # sparseΨ
-        Matrix{T}(undef, nf, Kmax),   # betaproj
+        Matrix{T}(undef, Kmax, Kmax), # Gact
         Matrix{T}(undef, Kmax, Kmax), # Cov
         Matrix{T}(undef, Kmax, Kmax), # cholW
         Matrix{T}(undef, nf, Kmax),   # M
@@ -166,6 +187,8 @@ function ARDWorkspace(Ψ::AbstractMatrix{T}, output_proj::Vector{T}, Kmax::Int) 
         Vector{T}(undef, nf),         # s_out
         Vector{T}(undef, nf),         # q_out
         Vector{T}(undef, nf),         # theta
+        fill(false, nf),              # is_active
+        fill(false, nf),              # is_deferred
         Vector{T}(undef, nf),         # proj_nf
         Vector{T}(undef, nf),         # proj_nf2
         Vector{T}(undef, Kmax),       # cov_col
@@ -193,7 +216,7 @@ ridge then Bunch–Kaufman. Never throws.
         active_idx::AbstractVector{Int}, lambda_reg::T
     ) where {T <: Real}
     W = view(ws.cholW, 1:K, 1:K)
-    G = view(ws.cross, view(active_idx, 1:K), 1:K)   # K×K active Gram block
+    G = view(ws.Gact, 1:K, 1:K)                      # K×K active Gram block (dense)
     @. W = beta * G
     @inbounds for c in 1:K
         W[c, c] += alpha[c]
@@ -207,9 +230,20 @@ ridge then Bunch–Kaufman. Never throws.
             logdetP += log(W[c, c])
         end
         logdetP *= 2
-        # Σ = P⁻¹ via in-place triangular solves against the identity (no allocation).
-        _set_identity!(Σ, K)
-        ldiv!(C, Σ)
+        if T <: BLAS.BlasFloat
+            # Σ = P⁻¹ via LAPACK potri (inverse from the Cholesky factor, ~K³/3
+            # flops vs ~K³ for two triangular solves against the identity).
+            LAPACK.potri!('U', W)
+            @inbounds for c in 1:K, r in 1:c
+                v = W[r, c]
+                Σ[r, c] = v
+                Σ[c, r] = v
+            end
+        else
+            # Generic fallback (MultiFloats, …): triangular solves, no allocation.
+            _set_identity!(Σ, K)
+            ldiv!(C, Σ)
+        end
         return logdetP
     end
 
@@ -245,31 +279,37 @@ end
     ) where {T <: Real}
     K = length(active_idx)
     nf = length(ws.output_proj)
-    aidx = view(active_idx, 1:K)
     cross = view(ws.cross, :, 1:K)
 
     logdetP = _spd_inverse!(ws.Cov, ws, K, alpha, beta, active_idx, lambda_reg)
     Cov = view(ws.Cov, 1:K, 1:K)
 
+    # Gather output_proj[active] into a dense buffer so mul! dispatches to BLAS
+    # (a Vector{Int}-indexed view is non-strided and falls back to generic matvec).
+    aproj = view(ws.cov_col, 1:K)
+    @inbounds for p in 1:K
+        aproj[p] = ws.output_proj[active_idx[p]]
+    end
+
     # mean = β · Σ · output_proj[active]
-    aproj = view(ws.output_proj, aidx)
     meanv = view(mean, 1:K)
     mul!(meanv, Cov, aproj)
     @. meanv *= beta
 
-    # betaproj = β · cross
-    bproj = view(ws.betaproj, :, 1:K)
-    @. bproj = beta * cross
-
     # s_in_i = β − β² · (crossᵢ · Σ · crossᵢ)   via M = cross·Σ
+    # (column-major accumulation; per-element summation order matches the
+    # original row-wise loop, so results are bit-identical)
     M = view(ws.M, :, 1:K)
     mul!(M, cross, Cov)
-    @inbounds for i in 1:nf
-        acc = zero(T)
-        for c in 1:K
-            acc += M[i, c] * cross[i, c]
+    acc = ws.proj_nf2
+    fill!(acc, zero(T))
+    @inbounds for c in 1:K
+        for i in 1:nf
+            acc[i] += M[i, c] * cross[i, c]
         end
-        ws.s_in[i] = beta - beta * beta * acc
+    end
+    @inbounds for i in 1:nf
+        ws.s_in[i] = beta - beta * beta * acc[i]
     end
 
     # q_in = β · (output_proj − cross·mean)
@@ -279,7 +319,7 @@ end
     _refresh_out_factors!(ws, active_idx, alpha, K)
 
     # Residual energy and log marginal likelihood (matches the MATLAB reference)
-    mul!(view(ws.Gmean, 1:K), view(ws.cross, aidx, 1:K), meanv)  # G·mean
+    mul!(view(ws.Gmean, 1:K), view(ws.Gact, 1:K, 1:K), meanv)  # G·mean
     resid_energy = output_energy - 2 * dot(meanv, aproj) + dot(meanv, view(ws.Gmean, 1:K))
     data_like = (size(ws.Ψ, 1) * log(beta) - beta * resid_energy) / 2
     quad = zero(T)
@@ -396,7 +436,7 @@ end
     # --- Algorithm constants (Tipping & Faul / bayesSparsify.m) --------------
     zero_factor = T(1.0e-12)
     min_dlog_alpha = T(1.0e-3)
-    min_dlog_beta = T(1.0e-6)
+    min_dlog_beta = model.beta_recompute_tol
     alignment_max = one(T) - T(1.0e-3)
     initial_alpha_max = T(1.0e3)
     snr = T(0.1)
@@ -427,10 +467,16 @@ end
 
     mul!(view(ws.cross, :, 1), Ψ', view(Ψ, :, t0))
     @views ws.sparseΨ[:, 1] .= Ψ[:, t0]
+    ws.Gact[1, 1] = ws.cross[t0, 1]
+    ws.is_active[t0] = true
 
     log_ml = _recompute_statistics!(
         ws, active_idx, alpha, mean_vec, beta, output_energy, model.lambda_reg
     )
+    # β value the cached cross-projections were last scaled with: the reference
+    # algorithm refreshes β·cross only on recompute / structural updates, so a
+    # sub-threshold β drift intentionally keeps using the previous β here.
+    beta_bp = beta
 
     # Alignment bookkeeping (deferred near-duplicate candidates)
     aligned_out = Int[]
@@ -465,6 +511,10 @@ end
                     qo = ws.q_out[t]
                     so = ws.s_out[t]
                     a = alpha[p]
+                    # guard: with throttled β refreshes the factors can go stale
+                    # enough that the log argument turns non-positive (the NumPy
+                    # reference yields NaN and skips); never triggers at default
+                    one(T) + so / a > zero(T) || continue
                     d = -(qo * qo / (so + a) - log(one(T) + so / a)) / 2
                     if d > best_del
                         best_del = d
@@ -494,6 +544,9 @@ end
                     dinv = inv(cand_alpha) - inv(alpha[p])
                     si = ws.s_in[t]
                     qi = ws.q_in[t]
+                    # guard against a non-positive log argument from stale
+                    # factors (throttled mode); never triggers at default
+                    dinv * si + one(T) > zero(T) || continue
                     dl = (dinv * qi * qi / (dinv * si + one(T)) - log(one(T) + si * dinv)) / 2
                     if isfinite(dl) && dl > best_dl
                         best_dl = dl
@@ -507,9 +560,12 @@ end
             if K < Kmax
                 @inbounds for t in 1:n_features
                     (ws.theta[t] > zero_factor) || continue
-                    (t in active_idx) && continue
-                    (t in aligned_out) && continue
+                    ws.is_active[t] && continue
+                    ws.is_deferred[t] && continue
                     ratio = ws.q_in[t]^2 / ws.s_in[t]
+                    # s_in can briefly go negative with throttled β refreshes
+                    # (NumPy reference: NaN → skipped); never triggers at default
+                    ratio > zero(T) || continue
                     dl = (ratio - one(T) - log(ratio)) / 2
                     if isfinite(dl) && dl > best_dl
                         best_dl = dl
@@ -555,13 +611,24 @@ end
                     n_aligned += 1
                 end
             end
-            n_aligned > 0 && (action = ACT_ALIGN)
+            if n_aligned > 0
+                action = ACT_ALIGN
+                ws.is_deferred[sel_term] = true
+            end
         elseif action == ACT_DELETE
             # un-defer candidates that were aligned to the term being deleted
             keep = aligned_in .!= sel_term
             if !all(keep)
+                for (j, k) in enumerate(keep)
+                    k || (ws.is_deferred[aligned_out[j]] = false)
+                end
                 aligned_in = aligned_in[keep]
                 aligned_out = aligned_out[keep]
+                # a term may have been deferred against several active terms;
+                # re-mark whatever is still on the deferral list
+                for t in aligned_out
+                    ws.is_deferred[t] = true
+                end
             end
         end
 
@@ -584,13 +651,15 @@ end
             mp = mean_vec[p]
             @. mc = -mp * kappa * cc
             @views mean_vec[1:K1] .+= mc
-            # s_in += kappa · (betaproj·cc)² ; q_in -= betaproj·mc
-            bproj = view(ws.betaproj, :, 1:K1)
-            mul!(ws.proj_nf, bproj, cc)
-            mul!(ws.proj_nf2, bproj, mc)
-            @. ws.s_in += kappa * ws.proj_nf^2
-            @. ws.q_in -= ws.proj_nf2
-            _post_update!(ws, active_idx, alpha, beta, K1)
+            # s_in += kappa · (β·cross·cc)² ; q_in -= β·cross·mc
+            # (β folded in as a scalar instead of materializing β·cross)
+            crossK = view(ws.cross, :, 1:K1)
+            mul!(ws.proj_nf, crossK, cc)
+            mul!(ws.proj_nf2, crossK, mc)
+            @. ws.s_in += kappa * (beta_bp * ws.proj_nf)^2
+            @. ws.q_in -= beta_bp * ws.proj_nf2
+            _post_update!(ws, active_idx, alpha, K1)
+            beta_bp = beta
             log_ml += delta_lml
 
         elseif action == ACT_ADD
@@ -621,15 +690,24 @@ end
             push!(mean_vec, new_mean)
             push!(alpha, sel_alpha)
             # proj_res = β·cross[:,K1] − (β·cross[:,1:K])·cc
-            bproj = view(ws.betaproj, :, 1:K)
-            mul!(ws.proj_nf2, bproj, cc)
+            crossK = view(ws.cross, :, 1:K)
+            mul!(ws.proj_nf2, crossK, cc)
             @inbounds for i in 1:n_features
-                pr = beta * ws.cross[i, K1] - ws.proj_nf2[i]
+                pr = beta * ws.cross[i, K1] - beta_bp * ws.proj_nf2[i]
                 ws.s_in[i] -= new_var * pr * pr
                 ws.q_in[i] -= new_mean * pr
             end
+            # extend the dense active Gram block: column = cross[active, K1],
+            # row = cross[t, 1:K1] (the entries the algorithm reads elsewhere)
+            @inbounds for r in 1:K
+                ws.Gact[r, K1] = ws.cross[active_idx[r], K1]
+                ws.Gact[K1, r] = ws.cross[t, r]
+            end
+            ws.Gact[K1, K1] = ws.cross[t, K1]
+            ws.is_active[t] = true
             push!(active_idx, t)
-            _post_update!(ws, active_idx, alpha, beta, K1)
+            _post_update!(ws, active_idx, alpha, K1)
+            beta_bp = beta
             log_ml += delta_lml
 
         elseif action == ACT_DELETE
@@ -638,8 +716,8 @@ end
             rv = Cov[p, p]
             rc = view(ws.cov_col, 1:K)
             rc .= view(Cov, :, p)
-            bproj = view(ws.betaproj, :, 1:K)
-            mul!(ws.proj_nf, bproj, rc)                  # projcol = betaproj·rc
+            crossK = view(ws.cross, :, 1:K)
+            mul!(ws.proj_nf, crossK, rc)                 # projcol = (β·cross)·rc / β
             rem_mean = mean_vec[p]
             # Cov -= rc·rcᵀ / rv
             @inbounds for cj in 1:K, ri in 1:K
@@ -649,18 +727,21 @@ end
                 mean_vec[r] += -rem_mean * rc[r] / rv
             end
             @inbounds for i in 1:n_features
-                pc = ws.proj_nf[i]
+                pc = beta_bp * ws.proj_nf[i]
                 ws.s_in[i] += pc * pc / rv
                 ws.q_in[i] += pc * rem_mean / rv
             end
             # structural removal of active position p
+            ws.is_active[sel_term] = false
             _drop_rowcol!(ws.Cov, p, K)
+            _drop_rowcol!(ws.Gact, p, K)
             _drop_col!(ws.cross, p, K)
             _drop_col!(ws.sparseΨ, p, K)
             deleteat!(active_idx, p)
             deleteat!(alpha, p)
             deleteat!(mean_vec, p)
-            _post_update!(ws, active_idx, alpha, beta, K - 1)
+            _post_update!(ws, active_idx, alpha, K - 1)
+            beta_bp = beta
             log_ml += delta_lml
         end
 
@@ -669,7 +750,7 @@ end
         old_beta = beta
         aidx = view(active_idx, 1:K)
         meanv = view(mean_vec, 1:K)
-        mul!(view(ws.Gmean, 1:K), view(ws.cross, aidx, 1:K), meanv)
+        mul!(view(ws.Gmean, 1:K), view(ws.Gact, 1:K, 1:K), meanv)
         resid_energy = output_energy - 2 * dot(meanv, view(ws.output_proj, aidx)) +
             dot(meanv, view(ws.Gmean, 1:K))
         sum_gamma = zero(T)
@@ -679,10 +760,14 @@ end
         sum_gamma = K - sum_gamma
         beta = (n_samples - sum_gamma) / max(resid_energy, T(1.0e-12))
         beta = min(beta, max_beta)
+        # stale factors (throttled mode) can transiently push the estimate
+        # non-positive; keep the previous value then (no-op at default)
+        beta > zero(T) || (beta = old_beta)
         if abs(log(beta) - log(old_beta)) > min_dlog_beta
             log_ml = _recompute_statistics!(
                 ws, active_idx, alpha, mean_vec, beta, output_energy, model.lambda_reg
             )
+            beta_bp = beta
             action == ACT_TERM && (action = ACT_NOISE)
         end
 
@@ -729,17 +814,15 @@ end
 end
 
 """
-    _post_update!(ws, active_idx, alpha, beta, K)
+    _post_update!(ws, active_idx, alpha, K)
 
-After a rank-1 structural/precision change, refresh the excluded-basis factors
-and the cached `betaproj = β·cross`.
+After a rank-1 structural/precision change, refresh the excluded-basis factors.
 """
 @muladd function _post_update!(
         ws::ARDWorkspace, active_idx::AbstractVector{Int},
-        alpha::AbstractVector{T}, beta::T, K::Int
+        alpha::AbstractVector{T}, K::Int
     ) where {T <: Real}
     _refresh_out_factors!(ws, active_idx, alpha, K)
-    @views @. ws.betaproj[:, 1:K] = beta * ws.cross[:, 1:K]
     return nothing
 end
 

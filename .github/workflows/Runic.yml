@@ -10,10 +10,18 @@ on:
       - '*'
   pull_request:
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   runic:
     name: Runic (Julia ${{ matrix.version }})
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -22,14 +30,14 @@ jobs:
           - '1'
           - 'nightly'
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
       - uses: julia-actions/cache@v3
       - name: Install Runic
         run: |
-          julia --color=yes -e 'using Pkg; Pkg.add("Runic")'
+          julia --color=yes -e 'using Pkg; Pkg.add(name = "Runic", version = "1.13")'
       - name: Run Runic (nightly)
         run: |
           git ls-files -z -- '*.jl' | xargs -0 julia --color=yes -m Runic --check --diff

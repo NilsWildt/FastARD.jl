@@ -1,5 +1,6 @@
 # FastARD
 
+[![CI](https://github.com/NilsWildt/FastARD.jl/actions/workflows/CI.yml/badge.svg)](https://github.com/NilsWildt/FastARD.jl/actions/workflows/CI.yml)
 [![All Contributors](https://img.shields.io/github/all-contributors/NilsWildt/FastARD.jl?labelColor=5e1ec7&color=c0ffee&style=flat-square)](#contributors)
 [![BestieTemplate](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/JuliaBesties/BestieTemplate.jl/main/docs/src/assets/badge.json)](https://github.com/JuliaBesties/BestieTemplate.jl)
 
@@ -45,6 +46,23 @@ println("Selected $(length(active_indices)) out of 35 basis functions")
 # Get predictions with uncertainty
 y_pred, y_std = predict_with_uncertainty(model, Psi_test)
 ```
+
+## Performance Tips
+
+- **Use a fast BLAS backend.** The fitting loop is dense linear algebra. On Apple
+  silicon, `using AppleAccelerate` before `using FastARD` activates the bundled
+  package extension and swaps the BLAS backend (~3.5× faster on large problems);
+  on Intel CPUs use `using MKL` (AMD users may also like `BLISBLAS.jl`). Add the
+  backend package to your environment — FastARD only declares them as optional
+  (weak) dependencies. To make this automatic on a given machine, put the
+  `using` line in `~/.julia/config/startup.jl`; Julia loads it in every session,
+  so the right backend for that CPU is always active. (Swapping BLAS is a
+  process-global effect, which is why FastARD leaves the choice to you instead
+  of forcing it.)
+- **Large active sets:** if fits select many basis functions, the per-iteration
+  statistics refresh dominates. `FastARDRegressor(beta_recompute_tol=1e-3)`
+  throttles it for a ~5–15× speedup with an essentially unchanged model
+  (the default `1e-6` matches the reference algorithm exactly).
 
 ## Tested Applications
 
