@@ -17,6 +17,13 @@ on:
       - "data/**"
       - "examples/**"
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   test:
     name: Julia ${{ matrix.version }}
@@ -32,15 +39,15 @@ jobs:
         # with Julia pre-releases, so a "pre" entry fails at dependency
         # resolution and never tests the package.
         version:
-          - "1.12"   # minimum supported version (the [compat] floor)
+          - "1.13"   # minimum supported version (the [compat] floor)
           - "1"      # latest stable release
     steps:
-      - uses: actions/checkout@v4
-      - uses: julia-actions/setup-julia@v2
+      - uses: actions/checkout@v7
+      - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.version }}
           arch: x64
-      - uses: julia-actions/cache@v2
+      - uses: julia-actions/cache@v3
       - name: Update registry
         run: julia -e 'using Pkg; Pkg.Registry.update()'
       - uses: julia-actions/julia-runtest@v1

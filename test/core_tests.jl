@@ -306,10 +306,10 @@ end
     @test m_def.coef ≈ m_ref.coef
 
     # throttled: must run, converge, and predict close to the reference
-    m_thr = FastARD.FastARDRegressor(beta_recompute_tol = 1.0e-3)
-    FastARD.fit!(m_thr, X, y)
-    @test sum(m_thr.active) > 0
+    m_throttled = FastARD.FastARDRegressor(beta_recompute_tol = 1.0e-3)
+    FastARD.fit!(m_throttled, X, y)
+    @test sum(m_throttled.active) > 0
     y_ref = FastARD.predict(m_ref, X)
-    y_thr = FastARD.predict(m_thr, X)
-    @test maximum(abs.(y_ref .- y_thr)) / maximum(abs.(y_ref)) < 0.05
+    y_throttled = FastARD.predict(m_throttled, X)
+    @test maximum(abs.(y_ref .- y_throttled)) / maximum(abs.(y_ref)) < 0.05
 end

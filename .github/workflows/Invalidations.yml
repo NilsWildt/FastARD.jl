@@ -1,0 +1,39 @@
+name: Invalidations
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    # Compare against the default branch only.
+    if: github.base_ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: julia-actions/setup-julia@v3
+        with:
+          version: '1'
+      - uses: actions/checkout@v7
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-invalidations@v1
+        id: invs_pr
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+      - uses: julia-actions/julia-buildpkg@v1
+      - uses: julia-actions/julia-invalidations@v1
+        id: invs_default
+      - name: Report invalidation counts
+        run: |
+          echo "Invalidations on the default branch: ${{ steps.invs_default.outputs.total }} (${{ steps.invs_default.outputs.deps }} via dependencies)" >> "$GITHUB_STEP_SUMMARY"
+          echo "This branch: ${{ steps.invs_pr.outputs.total }} (${{ steps.invs_pr.outputs.deps }} via dependencies)" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail if this branch adds invalidations
+        if: steps.invs_pr.outputs.total > steps.invs_default.outputs.total
+        run: exit 1
