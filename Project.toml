@@ -21,7 +21,7 @@ FastARDAppleAccelerateExt = "AppleAccelerate"
 FastARDMKLExt = "MKL"
 
 [compat]
-AppleAccelerate = "0.4"
+AppleAccelerate = "0.4, 0.7"
 ConcreteStructs = "0.2"
 DispatchDoctor = "0.4"
 LinearAlgebra = "1"
