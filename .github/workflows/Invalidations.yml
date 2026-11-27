@@ -30,10 +30,25 @@ jobs:
       - uses: julia-actions/julia-buildpkg@v1
       - uses: julia-actions/julia-invalidations@v1
         id: invs_default
+      - name: Split off the package-owned invalidations and set the tolerance
+        id: gate
+        env:
+          PR_TOTAL: ${{ steps.invs_pr.outputs.total }}
+          PR_DEPS: ${{ steps.invs_pr.outputs.deps }}
+          DEFAULT_TOTAL: ${{ steps.invs_default.outputs.total }}
+          DEFAULT_DEPS: ${{ steps.invs_default.outputs.deps }}
+        run: |
+          echo "owned_pr=$(( 10#${PR_TOTAL} - 10#${PR_DEPS} ))" >> "$GITHUB_OUTPUT"
+          echo "owned_default=$(( 10#${DEFAULT_TOTAL} - 10#${DEFAULT_DEPS} ))" >> "$GITHUB_OUTPUT"
+          echo "total_limit=$(( (10#${DEFAULT_TOTAL} * 105 + 99) / 100 ))" >> "$GITHUB_OUTPUT"
       - name: Report invalidation counts
         run: |
-          echo "Invalidations on the default branch: ${{ steps.invs_default.outputs.total }} (${{ steps.invs_default.outputs.deps }} via dependencies)" >> "$GITHUB_STEP_SUMMARY"
-          echo "This branch: ${{ steps.invs_pr.outputs.total }} (${{ steps.invs_pr.outputs.deps }} via dependencies)" >> "$GITHUB_STEP_SUMMARY"
+          echo "Invalidations on the default branch: ${{ steps.invs_default.outputs.total }} (${{ steps.invs_default.outputs.deps }} via dependencies, ${{ steps.gate.outputs.owned_default }} owned by the package; limit for this branch ${{ steps.gate.outputs.total_limit }})" >> "$GITHUB_STEP_SUMMARY"
+          echo "This branch: ${{ steps.invs_pr.outputs.total }} (${{ steps.invs_pr.outputs.deps }} via dependencies, ${{ steps.gate.outputs.owned_pr }} owned by the package)" >> "$GITHUB_STEP_SUMMARY"
+      # The total is dominated by dependencies and drifts between the two in-job
+      # measurements: every PR so far reported exactly 9 more on the side that is
+      # measured first. Gate the package-owned count strictly and the total only
+      # beyond a 5% tolerance. The action reports zero-padded counts, hence 10#.
       - name: Fail if this branch adds invalidations
-        if: steps.invs_pr.outputs.total > steps.invs_default.outputs.total
+        if: steps.gate.outputs.owned_pr > steps.gate.outputs.owned_default || steps.invs_pr.outputs.total > steps.gate.outputs.total_limit
         run: exit 1
